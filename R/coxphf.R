@@ -184,7 +184,8 @@ function(
 	obj$timedata <- scale(obj$timedata, FALSE, sd2)
 	mmm <- cbind(obj$mm1, obj$timedata)
 	   
-	CARDS <- cbind(obj$mm1, obj$resp, ones, obj$timedata)	  
+	start.order <- order(obj$resp[, 1], decreasing = TRUE)
+	CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)	  
   PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, gconv, 0, 0, 0, 0, NTDE, penalty)
   IOARRAY <- rbind(rep(1, k+NTDE), matrix(0, 2+k+NTDE, k + NTDE))
   if(!is.null(adapt)) IOARRAY[1,]<-adapt
