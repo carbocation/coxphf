@@ -117,6 +117,13 @@
 }
 
 .coxphf_assert_finite_native <- function(value, stage) {
+  if (
+    length(value$outpar) >= 10L &&
+    isTRUE(value$outpar[8] == 98) &&
+    isTRUE(value$outpar[10] == -98)
+  ) {
+    stop("Native ", stage, " failed.", call. = FALSE)
+  }
   if (any(!is.finite(value$outpar)) || any(!is.finite(value$outtab))) {
     stop(
       "Native ", stage,

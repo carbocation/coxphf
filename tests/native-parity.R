@@ -456,6 +456,20 @@ nonfinite_error <- tryCatch(
 )
 stopifnot(grepl("contains a non-finite value", nonfinite_error, fixed = TRUE))
 
+native_fit_failure <- numeric(15)
+native_fit_failure[c(8, 10)] <- c(98, -98)
+native_fit_failure_error <- tryCatch(
+  {
+    coxphf:::.coxphf_assert_finite_native(
+      list(outpar = native_fit_failure, outtab = 0),
+      "parameter estimation"
+    )
+    NA_character_
+  },
+  error = conditionMessage
+)
+stopifnot(grepl("Native parameter estimation failed", native_fit_failure_error, fixed = TRUE))
+
 intercept_only <- fit_with_backend(
   "rust",
   Surv(time, status) ~ 1,
@@ -512,4 +526,66 @@ custom_rows_fit <- fit_with_backend(
 stopifnot(
   length(custom_rows_fit$linear.predictors) == nrow(custom_rows),
   all(is.finite(custom_rows_fit$linear.predictors))
+)
+
+# A profile calculation can fail even when the penalized coefficient and
+# covariance fit is usable. Preserve that fit and mark the requested profile
+# inference as incomplete instead of throwing away the effect estimate.
+profile_failure_data <- data.frame(
+  time = c(7, 7, 3, 7, 8, 2, 8, 2, 2, 8, 8, 2, 6, 6, 3, 8),
+  status = c(0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0),
+  z = c(
+    0.156418, 0.472601, 0.573864, -0.765160,
+    1.157448, 1.195263, 2.076093, -0.615839,
+    -0.523722, 1.369940, 0.969076, -0.481999,
+    0.150343, 0.664153, -0.933727, 1.138314
+  ),
+  w = c(1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 1),
+  exposure = c(0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+)
+profile_failure_effect <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ z + w + exposure,
+  data = profile_failure_data,
+  pl = FALSE,
+  inference.only = TRUE
+)
+profile_failure_warnings <- character()
+profile_failure_fit <- withCallingHandlers(
+  fit_with_backend(
+    "rust",
+    Surv(time, status) ~ z + w + exposure,
+    data = profile_failure_data,
+    pl = TRUE,
+    pl.select = "exposure",
+    inference.only = TRUE
+  ),
+  warning = function(w) {
+    profile_failure_warnings <<- c(
+      profile_failure_warnings,
+      conditionMessage(w)
+    )
+    invokeRestart("muffleWarning")
+  }
+)
+stopifnot(
+  isTRUE(all.equal(
+    unlist(profile_failure_fit[c("coefficients", "var", "loglik", "iter")]),
+    unlist(profile_failure_effect[c("coefficients", "var", "loglik", "iter")]),
+    tolerance = 0,
+    check.attributes = TRUE
+  )),
+  all(is.na(profile_failure_fit$ci.lower)),
+  all(is.na(profile_failure_fit$ci.upper)),
+  all(is.na(profile_failure_fit$prob)),
+  all(is.na(profile_failure_fit$iter.ci)),
+  identical(
+    profile_failure_fit$profiled,
+    c(z = FALSE, w = FALSE, exposure = TRUE)
+  ),
+  any(grepl(
+    "returning coefficient and covariance estimates with profile fields set to NA",
+    profile_failure_warnings,
+    fixed = TRUE
+  ))
 )

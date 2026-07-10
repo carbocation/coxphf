@@ -72,6 +72,9 @@
 #' \item{profiled}{a named logical vector indicating which coefficients were
 #' selected for profile likelihood confidence intervals and tests. Present only
 #' when \code{pl=TRUE}.}
+#' If parameter estimation succeeds but profile inference fails, the coefficient
+#' and covariance estimates are retained and the profile fields are returned as
+#' \code{NA} with a warning.
 #' 
 #' @export
 #'
@@ -294,6 +297,7 @@ function(
 
   # --------------- Call native routine PLCOMP -------------------------------------
   if(pl) {
+    profile.error <- NULL
     if(backend == "rust") {
       value <- profile.value
     } else {
@@ -303,30 +307,78 @@ function(
       if(NTDE>0) PROFILE.IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
       storage.mode(PROFILE.PARMS) <- "double"
       storage.mode(PROFILE.IOARRAY) <- "double"
-      value <- .coxphf_native("plcomp", NATIVE, PROFILE.PARMS, PROFILE.IOARRAY, backend)
+      value <- tryCatch(
+        .coxphf_native("plcomp", NATIVE, PROFILE.PARMS, PROFILE.IOARRAY, backend),
+        error = function(e) {
+          profile.error <<- conditionMessage(e)
+          NULL
+        }
+      )
     }
-    .coxphf_assert_finite_native(value, "profile-likelihood estimation")
-    if(value$outpar[9]) warning("Numerical problem in estimating confidence intervals; check convergence.\n")
-    fit$method.ci <- "Profile Likelihood"
-    fit$ci.lower <- exp(value$outtab[4,  ] / Z.sd)
-    fit$ci.upper <- exp(value$outtab[5,  ] / Z.sd)
-    fit$prob <- 1 - pchisq(value$outtab[6,  ], 1)
-    fit$iter.ci<-t(value$outtab[7:9,])
-    colnames(fit$iter.ci)<-c("Lower", "Upper", "P-value")
-    rownames(fit$iter.ci)<-cov.name
-    fit$ci.lower[profile.selection & fit$iter.ci[,1]>=maxit]<-NA
-    fit$ci.upper[profile.selection & fit$iter.ci[,2]>=maxit]<-NA
-    fit$prob[profile.selection & fit$iter.ci[,3]>=maxit]<-NA
-    if(any(fit$iter.ci[profile.selection, , drop=FALSE]>=maxit)) {
-					warning("Convergence in estimating profile likelihood CI or p-values not attained for all variables.\nConsider re-run with smaller maxstep and larger maxit.\n")
-		}
-		if(any(fit$iter.ci[profile.selection, 3]==-9)) warning("Numerical error in computing penalized likelihood ratio test for some parameters.\n")
-		fit$prob[profile.selection & fit$iter.ci[,3]==-9]<-NA
 
-    fit$ci.lower[!profile.selection] <- NA_real_
-    fit$ci.upper[!profile.selection] <- NA_real_
-    fit$prob[!profile.selection] <- NA_real_
-    fit$iter.ci[!profile.selection, ] <- NA_real_
+    fit$method.ci <- "Profile Likelihood"
+    profile.failed <- is.null(value) ||
+      isTRUE(value$outpar[9] == 98) ||
+      any(!is.finite(value$outpar)) ||
+      any(!is.finite(value$outtab))
+
+    if(profile.failed) {
+      detail <- if(is.null(profile.error)) "" else paste0(" ", profile.error)
+      warning(
+        "Profile-likelihood inference failed; returning coefficient and ",
+        "covariance estimates with profile fields set to NA.",
+        detail,
+        call. = FALSE
+      )
+      fit$ci.lower <- rep(NA_real_, k + NTDE)
+      fit$ci.upper <- rep(NA_real_, k + NTDE)
+      fit$prob <- rep(NA_real_, k + NTDE)
+      fit$iter.ci <- matrix(
+        NA_real_,
+        nrow = k + NTDE,
+        ncol = 3L,
+        dimnames = list(cov.name, c("Lower", "Upper", "P-value"))
+      )
+    } else {
+      if(value$outpar[9]) warning("Numerical problem in estimating confidence intervals; check convergence.\n")
+      fit$ci.lower <- exp(value$outtab[4,  ] / Z.sd)
+      fit$ci.upper <- exp(value$outtab[5,  ] / Z.sd)
+      fit$prob <- 1 - pchisq(value$outtab[6,  ], 1)
+      fit$iter.ci<-t(value$outtab[7:9,])
+      colnames(fit$iter.ci)<-c("Lower", "Upper", "P-value")
+      rownames(fit$iter.ci)<-cov.name
+      if(any(!is.finite(c(
+        fit$ci.lower[profile.selection],
+        fit$ci.upper[profile.selection],
+        fit$prob[profile.selection]
+      )))) {
+        warning(
+          "Profile-likelihood inference produced non-finite transformed values; ",
+          "returning coefficient and covariance estimates with profile fields set to NA.",
+          call. = FALSE
+        )
+        fit$ci.lower[profile.selection] <- NA_real_
+        fit$ci.upper[profile.selection] <- NA_real_
+        fit$prob[profile.selection] <- NA_real_
+        fit$iter.ci[profile.selection, ] <- NA_real_
+      } else {
+        fit$ci.lower[profile.selection & fit$iter.ci[, 1] >= maxit] <- NA_real_
+        fit$ci.upper[profile.selection & fit$iter.ci[, 2] >= maxit] <- NA_real_
+        fit$prob[profile.selection & fit$iter.ci[, 3] >= maxit] <- NA_real_
+        if(any(fit$iter.ci[profile.selection, , drop = FALSE] >= maxit)) {
+          warning("Convergence in estimating profile likelihood CI or p-values not attained for all variables.\nConsider re-run with smaller maxstep and larger maxit.\n")
+        }
+        if(any(fit$iter.ci[profile.selection, 3] == -9)) {
+          warning("Numerical error in computing penalized likelihood ratio test for some parameters.\n")
+        }
+        fit$prob[profile.selection & fit$iter.ci[, 3] == -9] <- NA_real_
+      }
+
+      fit$ci.lower[!profile.selection] <- NA_real_
+      fit$ci.upper[!profile.selection] <- NA_real_
+      fit$prob[!profile.selection] <- NA_real_
+      fit$iter.ci[!profile.selection, ] <- NA_real_
+    }
     fit$profiled <- stats::setNames(profile.selection, cov.name)
 				
   } else {

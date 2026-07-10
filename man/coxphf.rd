@@ -90,6 +90,9 @@ The object returned is of the class \code{coxphf} and has the following attribut
 \item{profiled}{a named logical vector indicating which coefficients were
 selected for profile likelihood confidence intervals and tests. Present only
 when \code{pl=TRUE}.}
+If parameter estimation succeeds but profile inference fails, the coefficient
+and covariance estimates are retained and the profile fields are returned as
+\code{NA} with a warning.
 }
 \description{
 Implements Firth's penalized maximum likelihood bias reduction method  for Cox regression 

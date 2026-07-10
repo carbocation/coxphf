@@ -272,13 +272,19 @@ pub unsafe extern "C" fn rust_fit_profile_compact(
         for j in 0..p_total {
             profile_ioarray_slice[2 + 9 * j] = fit_ioarray_slice[2 + fit_io_nrow * j];
         }
-        profile::profile_with_workspace(
-            &data,
-            profile_parms_slice,
-            profile_ioarray_slice,
-            Some(profile_selection_slice),
-            &mut like_workspace,
-        );
+        let profile_result = catch_unwind(AssertUnwindSafe(|| {
+            profile::profile_with_workspace(
+                &data,
+                profile_parms_slice,
+                profile_ioarray_slice,
+                Some(profile_selection_slice),
+                &mut like_workspace,
+            );
+        }));
+        if profile_result.is_err() {
+            profile_parms_slice[8] = 98.0;
+            profile_parms_slice[9] = -98.0;
+        }
     }));
 
     if result.is_err() {
