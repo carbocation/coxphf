@@ -1,6 +1,8 @@
 #![allow(clippy::needless_range_loop)]
 
-use crate::matrix::{determinant_with_workspace, invert_into, Cube, Matrix};
+use crate::matrix::{
+    determinant_with_workspace, invert_into, Matrix, SymmetricCube, SymmetricMatrix,
+};
 use crate::native_data::NativeData;
 
 const LOWEST: f64 = 1.0e-44;
@@ -15,16 +17,16 @@ enum LikelihoodMode {
 pub(crate) struct LikeWorkspace {
     mode: LikelihoodMode,
     pub(crate) score: Vec<f64>,
-    pub(crate) hessian: Matrix,
-    derivative_hessian: Cube,
+    pub(crate) hessian: SymmetricMatrix,
+    derivative_hessian: SymmetricCube,
     x_all: Matrix,
     mask: Vec<bool>,
     bresx_all: Vec<f64>,
     linear_predictor: Vec<f64>,
     risk: Vec<f64>,
     first_moment: Vec<f64>,
-    second_moment: Matrix,
-    third_moment: Option<Cube>,
+    second_moment: SymmetricMatrix,
+    third_moment: Option<SymmetricCube>,
     information: Matrix,
     information_inverse: Matrix,
     determinant_workspace: Matrix,
@@ -54,17 +56,17 @@ impl LikeWorkspace {
         Self {
             mode,
             score: vec![0.0; p],
-            hessian: Matrix::zeros(p, p),
-            derivative_hessian: Cube::zeros(p),
+            hessian: SymmetricMatrix::zeros(p),
+            derivative_hessian: SymmetricCube::zeros(p),
             x_all,
             mask: vec![false; n],
             bresx_all: vec![0.0; p],
             linear_predictor: vec![0.0; n],
             risk: vec![0.0; n],
             first_moment: vec![0.0; p],
-            second_moment: Matrix::zeros(p, p),
+            second_moment: SymmetricMatrix::zeros(p),
             third_moment: if data.ntde == 0 {
-                Some(Cube::zeros(p))
+                Some(SymmetricCube::zeros(p))
             } else {
                 None
             },
@@ -174,7 +176,7 @@ pub(crate) fn evaluate(
 
     let mut jcode = initial_jcode;
     if ifirth != 0 {
-        information.copy_negated_from(hessian);
+        information.copy_negated_from_symmetric(hessian);
         invert_into(information, information_inverse, inverse_workspace);
 
         for j in 0..p {
@@ -182,7 +184,7 @@ pub(crate) fn evaluate(
             for k in 0..p {
                 let information_row = information_inverse.row(k);
                 for l in 0..p {
-                    trace -= information_row[l] * derivative_hessian.line(j, l)[k];
+                    trace -= information_row[l] * derivative_hessian.get(j, l, k);
                 }
             }
             score[j] += trace * penalty;
@@ -212,14 +214,14 @@ fn evaluate_general(
     x_all: &mut Matrix,
     loglik: &mut f64,
     score: &mut [f64],
-    hessian: &mut Matrix,
-    derivative_hessian: &mut Cube,
+    hessian: &mut SymmetricMatrix,
+    derivative_hessian: &mut SymmetricCube,
     mask: &mut [bool],
     bresx_all: &mut [f64],
     linear_predictor: &mut [f64],
     risk: &mut [f64],
     first_moment: &mut [f64],
-    second_moment: &mut Matrix,
+    second_moment: &mut SymmetricMatrix,
 ) {
     let n = data.n;
     let p = data.p_total;
@@ -266,9 +268,8 @@ fn evaluate_general(
                 for j in 0..p {
                     let weighted_x = x_row[j] * risk[row];
                     first_moment[j] += weighted_x;
-                    let second_row = second_moment.row_mut(j);
-                    for k in 0..p {
-                        second_row[k] += weighted_x * x_row[k];
+                    for k in j..p {
+                        second_moment.add(j, k, weighted_x * x_row[k]);
                     }
                 }
             }
@@ -293,18 +294,20 @@ fn evaluate_general(
                 - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)
                 * weight_j;
 
-            let hessian_row = hessian.row_mut(j);
-            for k in 0..p {
+            for k in j..p {
                 let weight_k = weights[k];
                 let centered_second = (second_moment.get(j, k)
                     - first_moment[j] / risk_sum * first_moment[k])
                     / risk_sum;
-                hessian_row[k] +=
-                    -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k;
+                hessian.add(
+                    j,
+                    k,
+                    -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k,
+                );
 
                 if ifirth != 0 {
-                    let derivative_line = derivative_hessian.line_mut(j, k);
-                    for l in 0..p {
+                    let derivative_tail = derivative_hessian.tail_mut(j, k);
+                    for l in k..p {
                         let mut raw_third = 0.0;
                         for row in 0..n {
                             if mask[row] {
@@ -321,7 +324,7 @@ fn evaluate_general(
                             first_moment,
                             second_moment,
                         );
-                        derivative_line[l] += -f64::from(data.ibresc[event_row])
+                        derivative_tail[l - k] += -f64::from(data.ibresc[event_row])
                             * centered_third
                             * weight_j
                             * weight_k
@@ -342,14 +345,14 @@ fn evaluate_interval_fast(
     x_all: &Matrix,
     loglik: &mut f64,
     score: &mut [f64],
-    hessian: &mut Matrix,
-    derivative_hessian: &mut Cube,
+    hessian: &mut SymmetricMatrix,
+    derivative_hessian: &mut SymmetricCube,
     bresx_all: &mut [f64],
     linear_predictor: &mut [f64],
     risk: &mut [f64],
     first_moment: &mut [f64],
-    second_moment: &mut Matrix,
-    third_moment: &mut Cube,
+    second_moment: &mut SymmetricMatrix,
+    third_moment: &mut SymmetricCube,
 ) {
     let n = data.n;
     first_moment.fill(0.0);
@@ -439,13 +442,13 @@ fn evaluate_fast(
     x_all: &Matrix,
     loglik: &mut f64,
     score: &mut [f64],
-    hessian: &mut Matrix,
-    derivative_hessian: &mut Cube,
+    hessian: &mut SymmetricMatrix,
+    derivative_hessian: &mut SymmetricCube,
     linear_predictor: &mut [f64],
     risk: &mut [f64],
     first_moment: &mut [f64],
-    second_moment: &mut Matrix,
-    third_moment: &mut Cube,
+    second_moment: &mut SymmetricMatrix,
+    third_moment: &mut SymmetricCube,
 ) {
     let n = data.n;
     let p = data.p_total;
@@ -501,21 +504,22 @@ fn evaluate_fast(
             score[j] += (x_row[j] * f64::from(data.ic[row])
                 - f64::from(current_events) * first_moment[j] / risk_sum)
                 * weight_j;
-            let hessian_row = hessian.row_mut(j);
-            for k in 0..p {
+            for k in j..p {
                 let weight_k = weights[k];
                 let centered_second = (second_moment.get(j, k)
                     - first_moment[j] / risk_sum * first_moment[k])
                     / risk_sum;
-                hessian_row[k] +=
-                    -f64::from(current_events) * centered_second * weight_j * weight_k;
+                hessian.add(
+                    j,
+                    k,
+                    -f64::from(current_events) * centered_second * weight_j * weight_k,
+                );
 
                 if ifirth != 0 {
-                    let third_line = third_moment.line(j, k);
-                    let derivative_line = derivative_hessian.line_mut(j, k);
-                    for l in 0..p {
+                    let derivative_tail = derivative_hessian.tail_mut(j, k);
+                    for l in k..p {
                         let centered_third = centered_third_moment(
-                            third_line[l],
+                            third_moment.get(j, k, l),
                             j,
                             k,
                             l,
@@ -523,7 +527,7 @@ fn evaluate_fast(
                             first_moment,
                             second_moment,
                         );
-                        derivative_line[l] += -f64::from(current_events)
+                        derivative_tail[l - k] += -f64::from(current_events)
                             * centered_third
                             * weight_j
                             * weight_k
@@ -544,8 +548,8 @@ fn update_risk_moments(
     ifirth: i32,
     risk_sum: &mut f64,
     first_moment: &mut [f64],
-    second_moment: &mut Matrix,
-    third_moment: &mut Cube,
+    second_moment: &mut SymmetricMatrix,
+    third_moment: &mut SymmetricCube,
 ) {
     let p = first_moment.len();
     *risk_sum += direction * row_risk;
@@ -553,14 +557,13 @@ fn update_risk_moments(
     for j in 0..p {
         let first = x_row[j] * row_risk;
         first_moment[j] += direction * first;
-        let second_row = second_moment.row_mut(j);
-        for k in 0..p {
+        for k in j..p {
             let second = first * x_row[k];
-            second_row[k] += direction * second;
+            second_moment.add(j, k, direction * second);
             if ifirth == 1 {
-                let third_line = third_moment.line_mut(j, k);
-                for l in 0..p {
-                    third_line[l] += direction * second * x_row[l];
+                let third_tail = third_moment.tail_mut(j, k);
+                for l in k..p {
+                    third_tail[l - k] += direction * second * x_row[l];
                 }
             }
         }
@@ -577,12 +580,12 @@ fn accumulate_aggregated_event(
     bresx_all: &[f64],
     risk_sum: f64,
     first_moment: &[f64],
-    second_moment: &Matrix,
-    third_moment: &Cube,
+    second_moment: &SymmetricMatrix,
+    third_moment: &SymmetricCube,
     loglik: &mut f64,
     score: &mut [f64],
-    hessian: &mut Matrix,
-    derivative_hessian: &mut Cube,
+    hessian: &mut SymmetricMatrix,
+    derivative_hessian: &mut SymmetricCube,
 ) {
     let p = data.p_total;
     let mut numerator = 0.0;
@@ -601,20 +604,21 @@ fn accumulate_aggregated_event(
         let weight_j = weights[j];
         score[j] += (bresx_all[j] - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)
             * weight_j;
-        let hessian_row = hessian.row_mut(j);
-        for k in 0..p {
+        for k in j..p {
             let weight_k = weights[k];
             let centered_second =
                 (second_moment.get(j, k) - first_moment[j] / risk_sum * first_moment[k]) / risk_sum;
-            hessian_row[k] +=
-                -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k;
+            hessian.add(
+                j,
+                k,
+                -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k,
+            );
 
             if ifirth != 0 {
-                let third_line = third_moment.line(j, k);
-                let derivative_line = derivative_hessian.line_mut(j, k);
-                for l in 0..p {
+                let derivative_tail = derivative_hessian.tail_mut(j, k);
+                for l in k..p {
                     let centered_third = centered_third_moment(
-                        third_line[l],
+                        third_moment.get(j, k, l),
                         j,
                         k,
                         l,
@@ -622,7 +626,7 @@ fn accumulate_aggregated_event(
                         first_moment,
                         second_moment,
                     );
-                    derivative_line[l] += -f64::from(data.ibresc[event_row])
+                    derivative_tail[l - k] += -f64::from(data.ibresc[event_row])
                         * centered_third
                         * weight_j
                         * weight_k
@@ -640,7 +644,7 @@ fn centered_third_moment(
     l: usize,
     risk_sum: f64,
     first_moment: &[f64],
-    second_moment: &Matrix,
+    second_moment: &SymmetricMatrix,
 ) -> f64 {
     (raw_third
         - second_moment.get(k, l) * first_moment[j] / risk_sum

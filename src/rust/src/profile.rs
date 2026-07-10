@@ -46,7 +46,7 @@ pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64])
     let mut initial_variance = Matrix::zeros(p, p);
     let mut variance = Matrix::zeros(p, p);
     let mut inverse_workspace = vec![0usize; p];
-    factor_input.copy_negated_from(&initial_hessian);
+    factor_input.copy_negated_from_symmetric(&initial_hessian);
     invert_into(&factor_input, &mut initial_variance, &mut inverse_workspace);
     let saved_coefficients = coefficients.clone();
 
@@ -97,7 +97,7 @@ pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64])
                 for j in 0..p {
                     score[j] = like_workspace.score[j] * f64::from(flags[j]);
                 }
-                factor_input.copy_negated_from(&like_workspace.hessian);
+                factor_input.copy_negated_from_symmetric(&like_workspace.hessian);
                 invert_into(&factor_input, &mut variance, &mut inverse_workspace);
 
                 let mut gradient_variance_gradient = 0.0;

@@ -49,10 +49,6 @@ impl Matrix {
         self.data[index] += value;
     }
 
-    pub(crate) fn fill(&mut self, value: f64) {
-        self.data.fill(value);
-    }
-
     #[inline]
     pub(crate) fn row(&self, row: usize) -> &[f64] {
         debug_assert!(row < self.nrow);
@@ -73,11 +69,17 @@ impl Matrix {
         self.data.copy_from_slice(&other.data);
     }
 
-    pub(crate) fn copy_negated_from(&mut self, other: &Self) {
-        debug_assert_eq!(self.nrow, other.nrow);
-        debug_assert_eq!(self.ncol, other.ncol);
-        for (target, &source) in self.data.iter_mut().zip(&other.data) {
-            *target = -source;
+    pub(crate) fn copy_negated_from_symmetric(&mut self, other: &SymmetricMatrix) {
+        debug_assert_eq!(self.nrow, other.n);
+        debug_assert_eq!(self.ncol, other.n);
+        for row in 0..other.n {
+            for col in row..other.n {
+                let value = -other.get(row, col);
+                self.set(row, col, value);
+                if row != col {
+                    self.set(col, row, value);
+                }
+            }
         }
     }
 
@@ -91,17 +93,18 @@ impl Matrix {
     }
 }
 
+/// Packed upper-triangular storage for a symmetric matrix.
 #[derive(Clone, Debug)]
-pub(crate) struct Cube {
+pub(crate) struct SymmetricMatrix {
     n: usize,
     data: Vec<f64>,
 }
 
-impl Cube {
+impl SymmetricMatrix {
     pub(crate) fn zeros(n: usize) -> Self {
         Self {
             n,
-            data: vec![0.0; n * n * n],
+            data: vec![0.0; n * (n + 1) / 2],
         }
     }
 
@@ -110,28 +113,94 @@ impl Cube {
     }
 
     #[inline]
-    fn index(&self, first: usize, second: usize, third: usize) -> usize {
+    fn index(&self, row: usize, col: usize) -> usize {
+        debug_assert!(row < self.n);
+        debug_assert!(col < self.n);
+        let (first, second) = if row <= col { (row, col) } else { (col, row) };
+        symmetric_pair_index(self.n, first, second)
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, row: usize, col: usize) -> f64 {
+        self.data[self.index(row, col)]
+    }
+
+    #[inline]
+    pub(crate) fn add(&mut self, row: usize, col: usize, value: f64) {
+        let index = self.index(row, col);
+        self.data[index] += value;
+    }
+}
+
+/// Packed storage for a tensor symmetric under every permutation of its three
+/// indices. Each unique `(first <= second <= third)` entry is stored once.
+#[derive(Clone, Debug)]
+pub(crate) struct SymmetricCube {
+    n: usize,
+    line_starts: Vec<usize>,
+    data: Vec<f64>,
+}
+
+impl SymmetricCube {
+    pub(crate) fn zeros(n: usize) -> Self {
+        let pair_count = n * (n + 1) / 2;
+        let mut line_starts = vec![0usize; pair_count];
+        let mut data_len = 0usize;
+        for first in 0..n {
+            for second in first..n {
+                line_starts[symmetric_pair_index(n, first, second)] = data_len;
+                data_len += n - second;
+            }
+        }
+        debug_assert_eq!(data_len, n * (n + 1) * (n + 2) / 6);
+        Self {
+            n,
+            line_starts,
+            data: vec![0.0; data_len],
+        }
+    }
+
+    pub(crate) fn fill(&mut self, value: f64) {
+        self.data.fill(value);
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, first: usize, second: usize, third: usize) -> f64 {
         debug_assert!(first < self.n);
         debug_assert!(second < self.n);
         debug_assert!(third < self.n);
-        third + self.n * (second + self.n * first)
+        let (first, second, third) = sorted_triple(first, second, third);
+        let start = self.line_starts[symmetric_pair_index(self.n, first, second)];
+        self.data[start + third - second]
     }
 
     #[inline]
-    pub(crate) fn line(&self, first: usize, second: usize) -> &[f64] {
-        debug_assert!(first < self.n);
+    pub(crate) fn tail_mut(&mut self, first: usize, second: usize) -> &mut [f64] {
+        debug_assert!(first <= second);
         debug_assert!(second < self.n);
-        let start = self.index(first, second, 0);
-        &self.data[start..start + self.n]
+        let start = self.line_starts[symmetric_pair_index(self.n, first, second)];
+        &mut self.data[start..start + self.n - second]
     }
+}
 
-    #[inline]
-    pub(crate) fn line_mut(&mut self, first: usize, second: usize) -> &mut [f64] {
-        debug_assert!(first < self.n);
-        debug_assert!(second < self.n);
-        let start = self.index(first, second, 0);
-        &mut self.data[start..start + self.n]
+#[inline]
+fn symmetric_pair_index(n: usize, first: usize, second: usize) -> usize {
+    debug_assert!(first <= second);
+    first * (2 * n - first + 1) / 2 + second - first
+}
+
+#[inline]
+fn sorted_triple(mut first: usize, mut second: usize, mut third: usize) -> (usize, usize, usize) {
+    if first > second {
+        std::mem::swap(&mut first, &mut second);
     }
+    if second > third {
+        std::mem::swap(&mut second, &mut third);
+    }
+    if first > second {
+        std::mem::swap(&mut first, &mut second);
+    }
+    (first, second, third)
 }
 
 /// Literal translation of the `vert`/`INVERT` routines in `coxphf.f90`.
@@ -304,7 +373,7 @@ fn determinant_in_place(matrix: &mut Matrix) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{determinant, invert, Matrix};
+    use super::{determinant, invert, sorted_triple, Matrix, SymmetricCube, SymmetricMatrix};
 
     #[test]
     fn inverse_and_determinant_match_small_examples() {
@@ -317,5 +386,34 @@ mod tests {
             assert!((actual - wanted).abs() < 1e-14);
         }
         assert!((determinant(&matrix) - 10.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn packed_symmetric_storage_maps_every_permutation() {
+        let mut matrix = SymmetricMatrix::zeros(4);
+        matrix.add(3, 1, 7.0);
+        assert_eq!(matrix.get(1, 3), 7.0);
+        assert_eq!(matrix.get(3, 1), 7.0);
+        assert_eq!(matrix.data.len(), 10);
+
+        let mut cube = SymmetricCube::zeros(4);
+        for first in 0..4 {
+            for second in first..4 {
+                let tail = cube.tail_mut(first, second);
+                for third in second..4 {
+                    tail[third - second] = (100 * first + 10 * second + third) as f64;
+                }
+            }
+        }
+        assert_eq!(cube.data.len(), 20);
+        for first in 0..4 {
+            for second in 0..4 {
+                for third in 0..4 {
+                    let sorted = sorted_triple(first, second, third);
+                    let expected = (100 * sorted.0 + 10 * sorted.1 + sorted.2) as f64;
+                    assert_eq!(cube.get(first, second, third), expected);
+                }
+            }
+        }
     }
 }

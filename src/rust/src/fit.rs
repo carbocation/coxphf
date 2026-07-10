@@ -78,7 +78,7 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
             return;
         }
 
-        working.copy_negated_from(&like_workspace.hessian);
+        working.copy_negated_from_symmetric(&like_workspace.hessian);
         invert_into(&working, &mut variance, &mut inverse_workspace);
         if iteration == 1 {
             parms[11] = loglik;
@@ -114,7 +114,7 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
             );
             assign_like_result(result, &mut loglik, &mut jcode);
             likelihood_calls += 1;
-            working.copy_negated_from(&like_workspace.hessian);
+            working.copy_negated_from_symmetric(&like_workspace.hessian);
 
             let mut half_steps = 0i32;
             while loglik <= previous_loglik
@@ -178,7 +178,7 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
         }
     }
 
-    working.copy_negated_from(&like_workspace.hessian);
+    working.copy_negated_from_symmetric(&like_workspace.hessian);
     invert_into(&working, &mut variance, &mut inverse_workspace);
     for j in 0..p {
         ioarray[2 + io_nrow * j] = coefficients[j];
