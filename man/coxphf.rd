@@ -18,7 +18,8 @@ coxphf(
   firth = TRUE,
   adapt = NULL,
   penalty = 0.5,
-  pl.select = NULL
+  pl.select = NULL,
+  inference.only = FALSE
 )
 }
 \arguments{
@@ -55,6 +56,12 @@ coefficient. Supply coefficient names, one-based positions, or a logical
 vector with one element per coefficient to profile only a subset. Other
 coefficients remain estimated as nuisance parameters, but their profile
 confidence limits, tests, and iteration counts are returned as \code{NA}.}
+
+\item{inference.only}{if \code{TRUE}, return coefficient-level inference
+without retaining the observation-level response or constructing linear
+predictors. This reduces result size and memory use in high-throughput analyses,
+but methods that require those components, such as \code{augment()}, cannot
+be used without refitting. Defaults to \code{FALSE}.}
 }
 \value{
 The object returned is of the class \code{coxphf} and has the following attributes:
@@ -66,10 +73,12 @@ The object returned is of the class \code{coxphf} and has the following attribut
 \item{method.ties}{the ties handling method}
 \item{iter}{the number of iterations needed to converge}
 \item{n}{the number of observations}
-\item{y}{the response}
+\item{nevent}{the number of events}
+\item{y}{the response, or \code{NULL} when \code{inference.only=TRUE}}
 \item{formula}{the model formula}
 \item{means}{the means of the covariates}
-\item{linear.predictors}{the linear predictors}
+\item{linear.predictors}{the linear predictors, or \code{NULL} when
+\code{inference.only=TRUE}}
 \item{method}{the estimation method (Standard ML or Penalized ML)}
 \item{method.ci}{the confidence interval estimation method (Profile Likelihood or Wald)}
 \item{ci.lower}{the lower confidence limits}

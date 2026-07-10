@@ -57,12 +57,13 @@ tidy.coxphf <- function(x, conf.int = FALSE, conf.level = 0.95, exponentiate = F
 #' 
 #' @export
 glance.coxphf <- function(x, ...){
+  nevent <- if (!is.null(x$nevent)) x$nevent else sum(x$y[, "status"], na.rm = TRUE)
   
   result <- with(
     x,
     tibble::tibble(
       n = n,
-      nevent = sum(y[, "status"], na.rm = TRUE),
+      nevent = nevent,
       logLik = as.numeric(stats::logLik(x)),
       AIC = stats::AIC(x)
     )
@@ -82,10 +83,16 @@ glance.coxphf <- function(x, ...){
 #' 
 #' @export
 augment.coxphf <- function(x, data = x$y, ...){
+  if (is.null(x$linear.predictors) || is.null(data)) {
+    stop(
+      "augment() is unavailable for a fit created with inference.only=TRUE.",
+      call. = FALSE
+    )
+  }
   
   result <- cbind(
     data,
-    ".linear.predictor" = x$linear.predictor
+    ".linear.predictor" = x$linear.predictors
   ) |> tibble::as_tibble()
   
   return(result)
@@ -95,7 +102,6 @@ augment.coxphf <- function(x, data = x$y, ...){
 #' @importFrom generics glance 
 #' @export
 generics::glance
-
 
 
 

@@ -40,6 +40,11 @@
 #' vector with one element per coefficient to profile only a subset. Other
 #' coefficients remain estimated as nuisance parameters, but their profile
 #' confidence limits, tests, and iteration counts are returned as \code{NA}.
+#' @param inference.only if \code{TRUE}, return coefficient-level inference
+#' without retaining the observation-level response or constructing linear
+#' predictors. This reduces result size and memory use in high-throughput analyses,
+#' but methods that require those components, such as \code{augment()}, cannot
+#' be used without refitting. Defaults to \code{FALSE}.
 #' 
 #' @return The object returned is of the class \code{coxphf} and has the following attributes:
 #' \item{coefficients}{the parameter estimates}
@@ -50,10 +55,12 @@
 #' \item{method.ties}{the ties handling method}
 #' \item{iter}{the number of iterations needed to converge}
 #' \item{n}{the number of observations}
-#' \item{y}{the response}
+#' \item{nevent}{the number of events}
+#' \item{y}{the response, or \code{NULL} when \code{inference.only=TRUE}}
 #' \item{formula}{the model formula}
 #' \item{means}{the means of the covariates}
-#' \item{linear.predictors}{the linear predictors}
+#' \item{linear.predictors}{the linear predictors, or \code{NULL} when
+#' \code{inference.only=TRUE}}
 #' \item{method}{the estimation method (Standard ML or Penalized ML)}
 #' \item{method.ci}{the confidence interval estimation method (Profile Likelihood or Wald)}
 #' \item{ci.lower}{the lower confidence limits}
@@ -141,18 +148,27 @@ function(
  firth=TRUE,
  adapt=NULL,
  penalty=0.5,
- pl.select=NULL
+ pl.select=NULL,
+ inference.only=FALSE
 ){
 ### by MP und GH, 2006-2018
   if(!is.logical(firth)) stop("Please set option firth to TRUE or FALSE.\n")
   if(!is.logical(pl)) stop("Please set option pl to TRUE or FALSE.\n")
+  if(!is.logical(inference.only) || length(inference.only) != 1L || is.na(inference.only)) {
+    stop("Please set inference.only to TRUE or FALSE.")
+  }
   if(!pl && !is.null(pl.select)) {
     stop("pl.select can only be used when pl=TRUE.")
   }
 
   mt <- stats::terms(formula, data=data)
   if(length(attr(mt, "term.labels")) == 0L){
-    return(survival::coxph(formula, data))
+    fit <- survival::coxph(formula, data)
+    if(inference.only) {
+      fit$y <- NULL
+      fit$linear.predictors <- NULL
+    }
+    return(fit)
   }
 
   # Note that sorting is important because the native code below expects
@@ -166,15 +182,20 @@ function(
   # since penalisation does not affect the baseline estimate
   if(ncol(obj$mm1) == 0){
     fit <- survival::coxph(formula, data)
+    if(inference.only) {
+      fit$y <- NULL
+      fit$linear.predictors <- NULL
+    }
     return(fit)
   }
 
-	prepared <- .coxphf_prepare_design(obj)
+	prepared <- .coxphf_prepare_design(
+    obj,
+    keep_original_design = !inference.only && obj$NTDE > 0L
+  )
 	obj <- prepared$obj
 	n <- nrow(obj$resp)
 
-	# id is the row index before sorting (needed to correctly match the linear predictor later)
-	id <- as.numeric(rownames(obj$resp)) 
   NTDE <- obj$NTDE
 	mmm <- prepared$original_design
   Z.sd <- prepared$scale
@@ -248,9 +269,24 @@ function(
   fit <- list(coefficients = coefs, alpha = alpha, var = covs, df = df,
               loglik = value$outpar[12:11], iter = value$outpar[10],
               method.ties = "breslow", n = n, ##terms = terms(formula),
-              y = obj$resp, formula = formula, call = match.call())
-  fit$means <- colMeans(mmm)
-  fit$linear.predictors[id] <- as.vector(scale(mmm, fit$means, scale=FALSE) %*% coefs)
+              nevent = sum(obj$resp[, 3]),
+              y = if(inference.only) NULL else obj$resp,
+              linear.predictors = NULL,
+              formula = formula, call = match.call())
+  fit$means <- prepared$original_means
+  if(!inference.only) {
+    if(NTDE == 0L) {
+      linear.predictors <- drop(obj$mm1 %*% coef.orig)
+    } else {
+      linear.predictors <- numeric(n)
+      for(j in seq_len(k + NTDE)) {
+        linear.predictors <- linear.predictors +
+          (mmm[, j] - fit$means[[j]]) * coefs[[j]]
+      }
+    }
+    fit$linear.predictors <- rep(NA_real_, obj$original_n)
+    fit$linear.predictors[obj$row_index] <- linear.predictors
+  }
 	if(fit$iter>=maxit) warning("Convergence for parameter estimation not attained in ", maxit, " iterations.\n")
   if(firth) fit$method <- "Penalized ML"
   else fit$method <- "Standard ML"

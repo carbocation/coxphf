@@ -118,6 +118,41 @@ stopifnot(
   all(is.na(selected_profile$iter.ci["z", ]))
 )
 
+inference_profile <- fit_with_backend(
+  "rust",
+  Surv(start, stop, event) ~ x + z,
+  data = interval,
+  pl = TRUE,
+  pl.select = "x",
+  inference.only = TRUE,
+  maxit = 100
+)
+stopifnot(
+  isTRUE(all.equal(
+    fit_values(inference_profile),
+    fit_values(selected_profile),
+    tolerance = 0,
+    check.attributes = TRUE
+  )),
+  identical(inference_profile$means, selected_profile$means),
+  identical(inference_profile$nevent, selected_profile$nevent),
+  is.null(inference_profile$y),
+  is.null(inference_profile$linear.predictors)
+)
+inference_glance <- generics::glance(inference_profile)
+stopifnot(
+  identical(inference_glance$n[[1]], inference_profile$n),
+  identical(inference_glance$nevent[[1]], inference_profile$nevent)
+)
+inference_augment_error <- tryCatch(
+  {
+    coxphf::augment.coxphf(inference_profile)
+    NA_character_
+  },
+  error = conditionMessage
+)
+stopifnot(grepl("inference.only=TRUE", inference_augment_error, fixed = TRUE))
+
 selected_fortran <- fit_with_backend(
   "fortran",
   Surv(start, stop, event) ~ x + z,
@@ -183,6 +218,16 @@ stopifnot(grepl(
     data = interval,
     pl.select = "z",
     adapt = c(1, 0)
+  ),
+  fixed = TRUE
+))
+stopifnot(grepl(
+  "inference.only",
+  profile_error(
+    Surv(start, stop, event) ~ x + z,
+    data = interval,
+    pl = FALSE,
+    inference.only = 1
   ),
   fixed = TRUE
 ))
@@ -296,6 +341,12 @@ for (backend in c("fortran", "rust")) {
     tolerance = 0,
     check.attributes = FALSE
   )))
+  stopifnot(isTRUE(all.equal(
+    origin_fit$linear.predictors,
+    shifted_fit$linear.predictors,
+    tolerance = 1e-10,
+    check.attributes = FALSE
+  )))
 
   original_design <- model.matrix(~calendar + x, data = origin_data)[, -1, drop = FALSE]
   expected_lp <- as.vector(
@@ -352,6 +403,26 @@ for (backend in c("fortran", "rust")) {
     tolerance = 1e-10,
     check.attributes = FALSE
   )))
+
+  if (backend == "rust") {
+    tde_inference_fit <- fit_with_backend(
+      backend,
+      Surv(start, stop, event) ~ z + tde_x + tde_x:log(stop),
+      data = tde_origin,
+      pl = FALSE,
+      inference.only = TRUE,
+      maxit = 100
+    )
+    stopifnot(
+      isTRUE(all.equal(
+        fit_values(tde_inference_fit),
+        fit_values(origin_fit),
+        tolerance = 0,
+        check.attributes = TRUE
+      )),
+      identical(tde_inference_fit$means, origin_fit$means)
+    )
+  }
 }
 
 constant_data <- transform(interval, constant = 1)
@@ -392,6 +463,18 @@ intercept_only <- fit_with_backend(
   pl = FALSE
 )
 stopifnot(inherits(intercept_only, "coxph"))
+intercept_inference_only <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ 1,
+  data = ties,
+  pl = FALSE,
+  inference.only = TRUE
+)
+stopifnot(
+  inherits(intercept_inference_only, "coxph"),
+  is.null(intercept_inference_only$y),
+  is.null(intercept_inference_only$linear.predictors)
+)
 
 missing_data <- ties
 missing_data$x[[2]] <- NA_real_
@@ -404,3 +487,29 @@ missing_fit <- fit_with_backend(
 stopifnot(missing_fit$n == nrow(missing_data) - 1L)
 stopifnot(length(missing_fit$linear.predictors) == nrow(missing_data))
 stopifnot(is.na(missing_fit$linear.predictors[[2]]))
+
+missing_last <- ties
+missing_last$x[[nrow(missing_last)]] <- NA_real_
+missing_last_fit <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ x + z,
+  data = missing_last,
+  pl = FALSE
+)
+stopifnot(
+  length(missing_last_fit$linear.predictors) == nrow(missing_last),
+  is.na(missing_last_fit$linear.predictors[[nrow(missing_last)]])
+)
+
+custom_rows <- ties
+rownames(custom_rows) <- paste0("sample_", seq_len(nrow(custom_rows)))
+custom_rows_fit <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ x + z,
+  data = custom_rows,
+  pl = FALSE
+)
+stopifnot(
+  length(custom_rows_fit$linear.predictors) == nrow(custom_rows),
+  all(is.finite(custom_rows_fit$linear.predictors))
+)

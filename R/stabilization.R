@@ -53,7 +53,7 @@
   scales
 }
 
-.coxphf_prepare_design <- function(obj) {
+.coxphf_prepare_design <- function(obj, keep_original_design = TRUE) {
   if (nrow(obj$resp) == 0L) {
     stop("No complete observations are available for fitting.", call. = FALSE)
   }
@@ -73,12 +73,26 @@
   time_scales <- .coxphf_column_scales(timedata, "Time-function")
   base_centers <- colMeans(base)
 
-  original_design <- base
+  original_design <- if (keep_original_design) base else NULL
+  original_means <- base_centers
   if (obj$NTDE > 0L) {
-    time_dependent <- base[, obj$timeind, drop = FALSE] * timedata
-    original_design <- cbind(base, time_dependent)
+    if (keep_original_design) {
+      time_dependent <- base[, obj$timeind, drop = FALSE] * timedata
+      original_means <- c(original_means, colMeans(time_dependent))
+      original_design <- cbind(base, time_dependent)
+    } else {
+      time_dependent_means <- vapply(
+        seq_len(obj$NTDE),
+        function(j) mean(base[, obj$timeind[[j]]] * timedata[, j]),
+        numeric(1)
+      )
+      original_means <- c(original_means, time_dependent_means)
+    }
   }
-  colnames(original_design) <- obj$covnames
+  if (keep_original_design) {
+    colnames(original_design) <- obj$covnames
+  }
+  names(original_means) <- obj$covnames
 
   obj$mm1 <- sweep(sweep(base, 2L, base_centers, FUN = "-"), 2L, base_scales, FUN = "/")
   if (ncol(timedata) > 0L) {
@@ -93,6 +107,7 @@
   list(
     obj = obj,
     original_design = original_design,
+    original_means = original_means,
     scale = c(
       unname(base_scales),
       unname(time_scales * base_scales[obj$timeind])

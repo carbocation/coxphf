@@ -30,6 +30,13 @@ function(
 	## Construct the model frame once and reuse it for both the response and
 	## model matrix. The previous implementation rebuilt both at least twice.
 	mf <- model.frame(expanded.terms, data=data, drop.unused.levels=TRUE)
+	original_n <- NROW(data)
+	row_index <- seq_len(original_n)
+	omitted <- attr(mf, "na.action")
+	if(!is.null(omitted))
+		row_index <- row_index[-as.integer(omitted)]
+	if(length(row_index) != nrow(mf))
+		stop("Internal row-index mapping does not match the model frame.")
 	resp <- model.response(mf)
 	if(ncol(resp) == 2)
 		resp <- cbind(start=rep(0, nrow(resp)), resp)
@@ -39,6 +46,7 @@ function(
 	      sort <- order(resp[, 2],  -resp[, 3])
 		mf <- mf[sort, , drop=FALSE]
 		resp <- resp[sort, ]
+		row_index <- row_index[sort]
 	}
 
 	mm <- model.matrix(expanded.terms, data=mf) ## Model-Matrix
@@ -98,6 +106,8 @@ function(
 	list(NTDE=NTDE, 			# number time dep. effects
 		fac=fac, 			# factor matrix ..
 		resp=resp, 			# N x 3 - response matrix
+		row_index=row_index,		# positions in the original data
+		original_n=original_n,		# original number of observations
 		mm1=mm1, 			# model matrix without time effects
 		timedata=timedata, 	# matrix with time functions as columns
 		timeind=timeind, 		# indicator of time-dependend effect
