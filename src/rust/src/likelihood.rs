@@ -22,11 +22,10 @@ pub(crate) struct LikeWorkspace {
     x_all: Matrix,
     mask: Vec<bool>,
     bresx_all: Vec<f64>,
-    linear_predictor: Vec<f64>,
     risk: Vec<f64>,
     first_moment: Vec<f64>,
     second_moment: SymmetricMatrix,
-    third_moment: Option<SymmetricCube>,
+    third_moment: SymmetricCube,
     information: Matrix,
     information_inverse: Matrix,
     determinant_workspace: Matrix,
@@ -61,15 +60,10 @@ impl LikeWorkspace {
             x_all,
             mask: vec![false; n],
             bresx_all: vec![0.0; p],
-            linear_predictor: vec![0.0; n],
             risk: vec![0.0; n],
             first_moment: vec![0.0; p],
             second_moment: SymmetricMatrix::zeros(p),
-            third_moment: if data.ntde == 0 {
-                Some(SymmetricCube::zeros(p))
-            } else {
-                None
-            },
+            third_moment: SymmetricCube::zeros(p),
             information: Matrix::zeros(p, p),
             information_inverse: Matrix::zeros(p, p),
             determinant_workspace: Matrix::zeros(p, p),
@@ -96,7 +90,9 @@ pub(crate) fn evaluate(
     let mut loglik = 0.0;
     workspace.score.fill(0.0);
     workspace.hessian.fill(0.0);
-    workspace.derivative_hessian.fill(0.0);
+    if ifirth != 0 {
+        workspace.derivative_hessian.fill(0.0);
+    }
 
     let mode = workspace.mode;
     let LikeWorkspace {
@@ -106,7 +102,6 @@ pub(crate) fn evaluate(
         x_all,
         mask,
         bresx_all,
-        linear_predictor,
         risk,
         first_moment,
         second_moment,
@@ -130,10 +125,10 @@ pub(crate) fn evaluate(
             derivative_hessian,
             mask,
             bresx_all,
-            linear_predictor,
             risk,
             first_moment,
             second_moment,
+            third_moment,
         ),
         LikelihoodMode::IntervalFast => evaluate_interval_fast(
             data,
@@ -146,13 +141,10 @@ pub(crate) fn evaluate(
             hessian,
             derivative_hessian,
             bresx_all,
-            linear_predictor,
             risk,
             first_moment,
             second_moment,
-            third_moment
-                .as_mut()
-                .expect("interval mode requires third-moment workspace"),
+            third_moment,
         ),
         LikelihoodMode::Fast => evaluate_fast(
             data,
@@ -164,13 +156,9 @@ pub(crate) fn evaluate(
             score,
             hessian,
             derivative_hessian,
-            linear_predictor,
-            risk,
             first_moment,
             second_moment,
-            third_moment
-                .as_mut()
-                .expect("fast mode requires third-moment workspace"),
+            third_moment,
         ),
     }
 
@@ -218,10 +206,10 @@ fn evaluate_general(
     derivative_hessian: &mut SymmetricCube,
     mask: &mut [bool],
     bresx_all: &mut [f64],
-    linear_predictor: &mut [f64],
     risk: &mut [f64],
     first_moment: &mut [f64],
     second_moment: &mut SymmetricMatrix,
+    third_moment: &mut SymmetricCube,
 ) {
     let n = data.n;
     let p = data.p_total;
@@ -244,32 +232,35 @@ fn evaluate_general(
             let source_column = data.ftmap[time_column];
             let time_value = data.ft.get(event_row, time_column);
             for row in 0..n {
-                x_all.set(row, j, data.x.get(row, source_column) * time_value);
+                if mask[row] {
+                    x_all.set(row, j, data.x.get(row, source_column) * time_value);
+                }
             }
             bresx_all[j] = time_value * data.bresx.get(event_row, source_column);
         }
 
-        for row in 0..n {
-            linear_predictor[row] = x_all.row_dot(row, coefficients);
-            risk[row] = linear_predictor[row].exp();
-        }
         let mut risk_sum = 0.0;
-        for row in 0..n {
-            if mask[row] {
-                risk_sum += risk[row];
-            }
-        }
-
         first_moment.fill(0.0);
         second_moment.fill(0.0);
+        if ifirth != 0 {
+            third_moment.fill(0.0);
+        }
         for row in 0..n {
             if mask[row] {
+                risk[row] = x_all.row_dot(row, coefficients).exp();
+                risk_sum += risk[row];
                 let x_row = x_all.row(row);
                 for j in 0..p {
                     let weighted_x = x_row[j] * risk[row];
                     first_moment[j] += weighted_x;
                     for k in j..p {
                         second_moment.add(j, k, weighted_x * x_row[k]);
+                        if ifirth != 0 {
+                            let third_tail = third_moment.tail_mut(j, k);
+                            for l in k..p {
+                                third_tail[l - k] += x_row[l] * x_row[k] * x_row[j] * risk[row];
+                            }
+                        }
                     }
                 }
             }
@@ -308,15 +299,8 @@ fn evaluate_general(
                 if ifirth != 0 {
                     let derivative_tail = derivative_hessian.tail_mut(j, k);
                     for l in k..p {
-                        let mut raw_third = 0.0;
-                        for row in 0..n {
-                            if mask[row] {
-                                let x_row = x_all.row(row);
-                                raw_third += x_row[l] * x_row[k] * x_row[j] * risk[row];
-                            }
-                        }
                         let centered_third = centered_third_moment(
-                            raw_third,
+                            third_moment.get(j, k, l),
                             j,
                             k,
                             l,
@@ -348,7 +332,6 @@ fn evaluate_interval_fast(
     hessian: &mut SymmetricMatrix,
     derivative_hessian: &mut SymmetricCube,
     bresx_all: &mut [f64],
-    linear_predictor: &mut [f64],
     risk: &mut [f64],
     first_moment: &mut [f64],
     second_moment: &mut SymmetricMatrix,
@@ -357,10 +340,8 @@ fn evaluate_interval_fast(
     let n = data.n;
     first_moment.fill(0.0);
     second_moment.fill(0.0);
-    third_moment.fill(0.0);
-    for row in 0..n {
-        linear_predictor[row] = x_all.row_dot(row, coefficients);
-        risk[row] = linear_predictor[row].exp();
+    if ifirth != 0 {
+        third_moment.fill(0.0);
     }
 
     let mut risk_sum = 0.0;
@@ -378,10 +359,10 @@ fn evaluate_interval_fast(
             if data.t2[row] < event_time {
                 break;
             }
+            risk[row] = x_all.row_dot(row, coefficients).exp();
             update_risk_moments(
-                row,
+                x_all.row(row),
                 1.0,
-                x_all,
                 risk[row],
                 ifirth,
                 &mut risk_sum,
@@ -398,9 +379,8 @@ fn evaluate_interval_fast(
                 break;
             }
             update_risk_moments(
-                row,
+                x_all.row(row),
                 -1.0,
-                x_all,
                 risk[row],
                 ifirth,
                 &mut risk_sum,
@@ -444,8 +424,6 @@ fn evaluate_fast(
     score: &mut [f64],
     hessian: &mut SymmetricMatrix,
     derivative_hessian: &mut SymmetricCube,
-    linear_predictor: &mut [f64],
-    risk: &mut [f64],
     first_moment: &mut [f64],
     second_moment: &mut SymmetricMatrix,
     third_moment: &mut SymmetricCube,
@@ -454,16 +432,16 @@ fn evaluate_fast(
     let p = data.p_total;
     first_moment.fill(0.0);
     second_moment.fill(0.0);
-    third_moment.fill(0.0);
-    for row in 0..n {
-        linear_predictor[row] = x_all.row_dot(row, coefficients);
-        risk[row] = linear_predictor[row].exp();
+    if ifirth != 0 {
+        third_moment.fill(0.0);
     }
 
     let mut risk_sum = 0.0;
     let mut tied_events = 0i32;
     for row in (0..n).rev() {
         let x_row = x_all.row(row);
+        let linear_predictor = x_all.row_dot(row, coefficients);
+        let row_risk = linear_predictor.exp();
         let weights = data.score_weights.row(row);
         let current_events;
         if row > 0 {
@@ -480,10 +458,9 @@ fn evaluate_fast(
         }
 
         update_risk_moments(
-            row,
+            x_row,
             1.0,
-            x_all,
-            risk[row],
+            row_risk,
             ifirth,
             &mut risk_sum,
             first_moment,
@@ -491,7 +468,7 @@ fn evaluate_fast(
             third_moment,
         );
 
-        let contribution = linear_predictor[row] * f64::from(data.ic[row])
+        let contribution = linear_predictor * f64::from(data.ic[row])
             - f64::from(current_events) * risk_sum.max(LOWEST).ln();
         if ngv == p as i32 {
             *loglik += contribution * data.score_weights.get(row, 0);
@@ -541,9 +518,8 @@ fn evaluate_fast(
 
 #[allow(clippy::too_many_arguments)]
 fn update_risk_moments(
-    row: usize,
+    x_row: &[f64],
     direction: f64,
-    x: &Matrix,
     row_risk: f64,
     ifirth: i32,
     risk_sum: &mut f64,
@@ -553,7 +529,6 @@ fn update_risk_moments(
 ) {
     let p = first_moment.len();
     *risk_sum += direction * row_risk;
-    let x_row = x.row(row);
     for j in 0..p {
         let first = x_row[j] * row_risk;
         first_moment[j] += direction * first;
