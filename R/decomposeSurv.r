@@ -12,38 +12,39 @@ function(
 ### 2006-10
 {
 	orig.formula <- formula
+	orig.terms <- stats::terms(orig.formula, data=data)
 
 	## expand formula if needed:
 	repeat {
-		terms <- terms(formula, data=data)
-		fac <- attr(terms, "factors")
+		expanded.terms <- stats::terms(formula, data=data)
+		fac <- attr(expanded.terms, "factors")
 		needed <- rownames(fac)[!rownames(fac) %in% colnames(fac)][-1]
 
 		if(length(needed) == 0) break
 
 		formula <- as.formula(paste(as.character(formula)[2], "~",
 							as.character(formula)[3], "+",
-							paste(needed, sep="+")))
+							paste(needed, sep="+")), env=environment(orig.formula))
 	}
 
-	## construct 3-col response:
-	resp <- model.extract(model.frame(formula, data = data), "response")
+	## Construct the model frame once and reuse it for both the response and
+	## model matrix. The previous implementation rebuilt both at least twice.
+	mf <- model.frame(expanded.terms, data=data, drop.unused.levels=TRUE)
+	resp <- model.response(mf)
 	if(ncol(resp) == 2)
 		resp <- cbind(start=rep(0, nrow(resp)), resp)
 
 	## sortieren nach STOPzeit und -Cens
 	if(sort) {
 	      sort <- order(resp[, 2],  -resp[, 3])
-      	data <- data[sort, , drop=FALSE]
+		mf <- mf[sort, , drop=FALSE]
 		resp <- resp[sort, ]
 	}
 
-	mm <- model.matrix(formula, data = data) ## Model-Matrix
+	mm <- model.matrix(expanded.terms, data=mf) ## Model-Matrix
 	mm1 <- mm[, -1, drop=FALSE]	# w/o intercept
 
-	terms <- terms(formula, data=data)
-	fac <- attr(terms, "factors")
-	labels <- attr(terms, "term.labels")
+	fac <- attr(expanded.terms, "factors")
 
 	## splittes by special chars
 #	f <- function(str)
@@ -72,7 +73,7 @@ function(
 	NTDE <- sum(inters)
 
 
-	timedata <- matrix(0, nrow(data), 0)
+	timedata <- matrix(0, nrow(mf), 0)
 	timeind <- c()
 
 	## loop for (time x effect)
@@ -92,7 +93,7 @@ function(
 	)
 
 	## indicator to identify the original formula:
-	ind <- covnames %in% colnames(attr(terms(orig.formula, data=data), "factors"))
+	ind <- covnames %in% colnames(attr(orig.terms, "factors"))
 
 	list(NTDE=NTDE, 			# number time dep. effects
 		fac=fac, 			# factor matrix ..
@@ -101,6 +102,7 @@ function(
 		timedata=timedata, 	# matrix with time functions as columns
 		timeind=timeind, 		# indicator of time-dependend effect
 		covnames=covnames,	# names of covariates
-		ind=ind			# indicator if some terms of not in formula
+		ind=ind,			# indicator if some terms of not in formula
+		terms=orig.terms
 	)
 }

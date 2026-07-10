@@ -246,3 +246,23 @@ nonfinite_error <- tryCatch(
   error = conditionMessage
 )
 stopifnot(grepl("contains a non-finite value", nonfinite_error, fixed = TRUE))
+
+intercept_only <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ 1,
+  data = ties,
+  pl = FALSE
+)
+stopifnot(inherits(intercept_only, "coxph"))
+
+missing_data <- ties
+missing_data$x[[2]] <- NA_real_
+missing_fit <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ x + z,
+  data = missing_data,
+  pl = FALSE
+)
+stopifnot(missing_fit$n == nrow(missing_data) - 1L)
+stopifnot(length(missing_fit$linear.predictors) == nrow(missing_data))
+stopifnot(is.na(missing_fit$linear.predictors[[2]]))

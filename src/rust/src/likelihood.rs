@@ -273,12 +273,12 @@ fn evaluate_general(
         }
         let contribution = numerator - f64::from(data.ibresc[event_row]) * log_risk_sum;
         if ngv == p as i32 {
-            *loglik += contribution * data.score_weights.get(event_row, 0);
+            *loglik += contribution * data.score_weight(event_row, 0);
         } else {
             *loglik += contribution;
         }
 
-        let weights = data.score_weights.row(event_row);
+        let weights = data.score_weights(event_row);
         for j in 0..p {
             let weight_j = weights[j];
             score[j] += (bresx_all[j]
@@ -442,7 +442,7 @@ fn evaluate_fast(
         let x_row = x_all.row(row);
         let linear_predictor = x_all.row_dot(row, coefficients);
         let row_risk = linear_predictor.exp();
-        let weights = data.score_weights.row(row);
+        let weights = data.score_weights(row);
         let current_events;
         if row > 0 {
             if data.t2[row] == data.t2[row - 1] {
@@ -471,7 +471,7 @@ fn evaluate_fast(
         let contribution = linear_predictor * f64::from(data.ic[row])
             - f64::from(current_events) * risk_sum.max(LOWEST).ln();
         if ngv == p as i32 {
-            *loglik += contribution * data.score_weights.get(row, 0);
+            *loglik += contribution * data.score_weight(row, 0);
         } else {
             *loglik += contribution;
         }
@@ -569,12 +569,12 @@ fn accumulate_aggregated_event(
     }
     let contribution = numerator - f64::from(data.ibresc[event_row]) * risk_sum.max(LOWEST).ln();
     if ngv == p as i32 {
-        *loglik += contribution * data.score_weights.get(event_row, 0);
+        *loglik += contribution * data.score_weight(event_row, 0);
     } else {
         *loglik += contribution;
     }
 
-    let weights = data.score_weights.row(event_row);
+    let weights = data.score_weights(event_row);
     for j in 0..p {
         let weight_j = weights[j];
         score[j] += (bresx_all[j] - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)

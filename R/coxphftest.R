@@ -82,15 +82,6 @@ coxphftest <-
     ### MP, GH, 2006-10
     ###
     
-    call <- match.call()
-    mf <- match.call(expand.dots =FALSE)
-    m <- match(c("formula","data"), names(mf), 0L)
-    mf <- mf[c(1, m)]
-    mf$drop.unused.levels <- TRUE
-    mf[[1L]] <- quote(stats::model.frame)
-    mf <- eval(mf, parent.frame())
-    mt <- attr(mf, "terms")
-    
     obj <- decomposeSurv(formula, data, sort = TRUE)
     prepared <- .coxphf_prepare_design(obj)
     obj <- prepared$obj
@@ -99,20 +90,19 @@ coxphftest <-
     Z.sd <- prepared$scale
     cov.name <- obj$covnames
     k <- ncol(obj$mm1)
-    ones <- matrix(1, n, k + NTDE)
+    backend <- .coxphf_native_backend()
     
     start.order <- order(obj$resp[, 1], decreasing = TRUE)
-    CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)
+    NATIVE <- .coxphf_native_payload(obj, start.order, backend)
     PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, 0.0001, 0, 0, 0, 0, NTDE, penalty)
     IOARRAY <- rbind(rep(1, k+NTDE), matrix(0, 2+k+NTDE, k + NTDE))
     if(!is.null(adapt)) IOARRAY[1,]<-adapt      
     if(NTDE>0)
       IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
-    storage.mode(CARDS) <- "double"
     storage.mode(PARMS) <- "double"
     storage.mode(IOARRAY) <- "double" #
     # --------------- Call native routine FIRTHCOX -------------------------------------
-    value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+    value <- .coxphf_native("firthcox", NATIVE, PARMS, IOARRAY, backend)
     .coxphf_assert_finite_native(value, "hypothesis-test full-model estimation")
     if(value$outpar[8])
       warning("Error in routine FIRTHCOX; parms8 <> 0")
@@ -132,7 +122,7 @@ coxphftest <-
     if(!missing(values))
       IOARRAY[2, pos] <- values * Z.sd[pos]
     # --------------- Call native routine FIRTHCOX -------------------------------------
-    value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+    value <- .coxphf_native("firthcox", NATIVE, PARMS, IOARRAY, backend)
     .coxphf_assert_finite_native(value, "hypothesis-test restricted-model estimation")
     if(value$outpar[8])
       warning("Error in routine FIRTHCOX; parms8 <> 0")

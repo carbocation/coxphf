@@ -72,14 +72,6 @@ coxphfplot <-
     ### by MP und GH, 2006-10
     ###
     
-    call <- match.call()
-    mf <- match.call(expand.dots =FALSE)
-    m <- match(c("formula","data"), names(mf), 0L)
-    mf <- mf[c(1, m)]
-    mf$drop.unused.levels <- TRUE
-    mf[[1L]] <- quote(stats::model.frame)
-    mf <- eval(mf, parent.frame())
-    mt <- attr(mf, "terms")
     ## call coxphf:
     fit <- coxphf(formula=formula, data=data, alpha=alpha, maxit=maxit, maxhs=maxhs, 
                   epsilon=epsilon, maxstep=maxstep, firth=firth, pl=TRUE, penalty=penalty, adapt=adapt)
@@ -96,10 +88,10 @@ coxphfplot <-
     cov.name <- obj$covnames
     
     k <- ncol(obj$mm1)          # number covariates
-    ones <- matrix(1, n, k+NTDE)
+    backend <- .coxphf_native_backend()
     
     start.order <- order(obj$resp[, 1], decreasing = TRUE)
-    CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)
+    NATIVE <- .coxphf_native_payload(obj, start.order, backend)
     PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, 0.0001, 0, 0, 0, 0, NTDE, penalty)
     
     #--> nun Berechnungen fuer Schleife
@@ -133,7 +125,7 @@ coxphfplot <-
         IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
       
       # --------------- Call native routine FIRTHCOX -------------------------------------
-      value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+      value <- .coxphf_native("firthcox", NATIVE, PARMS, IOARRAY, backend)
       .coxphf_assert_finite_native(value, "profile-plot estimation")
       if(value$outpar[8])
         warning("Error in routine FIRTHCOX; parms8 <> 0")

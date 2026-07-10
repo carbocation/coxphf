@@ -134,33 +134,28 @@ function(
  penalty=0.5
 ){
 ### by MP und GH, 2006-2018
-  call <- match.call()
-  mf <- match.call(expand.dots = FALSE)
-  m <- match(c("formula","data"), names(mf), 0L)
-  mf <- mf[c(1, m)]
-  mf$drop.unused.levels <- TRUE
-  mf[[1L]] <- quote(stats::model.frame)
-  mf <- eval(mf, parent.frame())
-  mt <- attr(mf, "terms")
-  
-  y <- model.response(mf)
-  n <- nrow(data)
-  x <- model.matrix(mt, mf)
-
   if(!is.logical(firth)) stop("Please set option firth to TRUE or FALSE.\n")
   if(!is.logical(pl)) stop("Please set option pl to TRUE or FALSE.\n")
-  
+
+  mt <- stats::terms(formula, data=data)
+  if(length(attr(mt, "term.labels")) == 0L){
+    return(survival::coxph(formula, data))
+  }
+
+  # Note that sorting is important because the native code below expects
+  # the data to be sorted by time and status. decomposeSurv constructs and
+  # reuses one model frame for the response and model matrix.
+	obj <- decomposeSurv(formula, data, sort = TRUE)
+  mt <- obj$terms
+
   # if only an intercept is included in the formula
   # fit a coxph model instead
   # since penalisation does not affect the baseline estimate
-  if(ncol(x) == 0 || (ncol(x) == 1 && colnames(x) == "(Intercept)")){
+  if(ncol(obj$mm1) == 0){
     fit <- survival::coxph(formula, data)
     return(fit)
   }
-  
-  # Note that sorting is important because the native code below expects
-  # the data to be sorted by time and status
-	obj <- decomposeSurv(formula, data, sort = TRUE)
+
 	prepared <- .coxphf_prepare_design(obj)
 	obj <- prepared$obj
 	n <- nrow(obj$resp)
@@ -173,7 +168,7 @@ function(
         
 	cov.name <- obj$covnames
   k <- ncol(obj$mm1)          # number of covariates
-  ones <- matrix(1, n, k+NTDE)
+  backend <- .coxphf_native_backend()
         
   if(!is.null(adapt)){
       if(k+NTDE != length(adapt)) stop("length of adapt must match the number of parameters to be estimated.")
@@ -181,18 +176,41 @@ function(
   }
 
 	start.order <- order(obj$resp[, 1], decreasing = TRUE)
-	CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)	  
+  NATIVE <- .coxphf_native_payload(obj, start.order, backend)
   PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, gconv, 0, 0, 0, 0, NTDE, penalty)
   IOARRAY <- rbind(rep(1, k+NTDE), matrix(0, 2+k+NTDE, k + NTDE))
   if(!is.null(adapt)) IOARRAY[1,]<-adapt
   if(NTDE>0)
   IOARRAY[4, (k+1):(k+NTDE)] <- obj$timeind
-  storage.mode(CARDS) <- "double"
   storage.mode(PARMS) <- "double"
   storage.mode(IOARRAY) <- "double"
 
   ## --------------- Call native routine FIRTHCOX -----------------------------------
-  value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+  profile.value <- NULL
+  if(pl && backend == "rust") {
+    PROFILE.PARMS <- c(PARMS[1:7], qchisq(1-alpha, 1), gconv, 0, 0, 0, 0, NTDE, penalty)
+    PROFILE.IOARRAY <- rbind(
+      rep(1, k+NTDE),
+      rep(0, k+NTDE),
+      rep(0, k+NTDE),
+      matrix(0, 6, k+NTDE)
+    )
+    if(!is.null(adapt)) PROFILE.IOARRAY[1,]<-adapt
+    if(NTDE>0) PROFILE.IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
+    storage.mode(PROFILE.PARMS) <- "double"
+    storage.mode(PROFILE.IOARRAY) <- "double"
+    combined.value <- .coxphf_native_fit_profile(
+      NATIVE,
+      PARMS,
+      IOARRAY,
+      PROFILE.PARMS,
+      PROFILE.IOARRAY
+    )
+    value <- combined.value$fit
+    profile.value <- combined.value$profile
+  } else {
+    value <- .coxphf_native("firthcox", NATIVE, PARMS, IOARRAY, backend)
+  }
   .coxphf_assert_finite_native(value, "parameter estimation")
   if(value$outpar[8]) warning("Numerical problem in parameter estimation; check convergence.\n")
   outtab <- matrix(value$outtab, nrow=3+k+NTDE) #
@@ -220,13 +238,17 @@ function(
 
   # --------------- Call native routine PLCOMP -------------------------------------
   if(pl) {
-    PARMS <- c(PARMS[1:7], qchisq(1-alpha, 1), gconv, 0, 0, 0, 0, NTDE, penalty)
-    IOARRAY <- rbind(rep(1, k+NTDE), rep(0, k+NTDE), coef.orig, matrix(0, 6, k+NTDE))
-    if(!is.null(adapt)) IOARRAY[1,]<-adapt
-    if(NTDE>0) IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
-    storage.mode(PARMS) <- "double"
-    storage.mode(IOARRAY) <- "double"
-    value <- .coxphf_native("plcomp", CARDS, PARMS, IOARRAY)
+    if(backend == "rust") {
+      value <- profile.value
+    } else {
+      PROFILE.PARMS <- c(PARMS[1:7], qchisq(1-alpha, 1), gconv, 0, 0, 0, 0, NTDE, penalty)
+      PROFILE.IOARRAY <- rbind(rep(1, k+NTDE), rep(0, k+NTDE), coef.orig, matrix(0, 6, k+NTDE))
+      if(!is.null(adapt)) PROFILE.IOARRAY[1,]<-adapt
+      if(NTDE>0) PROFILE.IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
+      storage.mode(PROFILE.PARMS) <- "double"
+      storage.mode(PROFILE.IOARRAY) <- "double"
+      value <- .coxphf_native("plcomp", NATIVE, PROFILE.PARMS, PROFILE.IOARRAY, backend)
+    }
     .coxphf_assert_finite_native(value, "profile-likelihood estimation")
     if(value$outpar[9]) warning("Numerical problem in estimating confidence intervals; check convergence.\n")
     fit$method.ci <- "Profile Likelihood"
