@@ -104,7 +104,8 @@ coxphfplot <-
     obj$timedata <- scale(obj$timedata, FALSE, sd2)
     mmm <- cbind(obj$mm1, obj$timedata)
     
-    CARDS <- cbind(obj$mm1, obj$resp, ones, obj$timedata)   
+    start.order <- order(obj$resp[, 1], decreasing = TRUE)
+    CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)
     PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, 0.0001, 0, 0, 0, 0, NTDE, penalty)
     
     #--> nun Berechnungen fuer Schleife
@@ -134,12 +135,11 @@ coxphfplot <-
       res[i, 2] <- coefs[pos] + covs[pos,pos]^.5 * knots[i]
       offset[pos] <- res[i, 2] * Z.sd[pos]  
       IOARRAY <- rbind(iflag, offset, matrix(0, 1+k+NTDE, k + NTDE))
+      if(NTDE>0)
+        IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
       
-      # --------------- Aufruf Fortran - Makro FIRTHCOX ----------------------------------
-      value <- .Fortran("firthcox",
-                        CARDS,
-                        outpar = PARMS,
-                        outtab = IOARRAY, PACKAGE="coxphf")
+      # --------------- Call native routine FIRTHCOX -------------------------------------
+      value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
       if(value$outpar[8])
         warning("Error in routine FIRTHCOX; parms8 <> 0")
       res[i, 3] <- value$outpar[11]

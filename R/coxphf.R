@@ -158,7 +158,7 @@ function(
     return(fit)
   }
   
-  # Note that sorting is important because the Fortran code below expects
+  # Note that sorting is important because the native code below expects
   # the data to be sorted by time and status
 	obj <- decomposeSurv(formula, data, sort = TRUE)
 	
@@ -195,11 +195,8 @@ function(
   storage.mode(PARMS) <- "double"
   storage.mode(IOARRAY) <- "double"
 
-  ## --------------- Call Fortran routine FIRTHCOX ----------------------------------
-  value <- .Fortran("firthcox",
-                CARDS,
-                outpar = PARMS,
-                outtab = IOARRAY, PACKAGE="coxphf")
+  ## --------------- Call native routine FIRTHCOX -----------------------------------
+  value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
   if(value$outpar[8]) warning("Numerical problem in parameter estimation; check convergence.\n")
   outtab <- matrix(value$outtab, nrow=3+k+NTDE) #
 
@@ -224,7 +221,7 @@ function(
   else fit$method <- "Standard ML"
   if(penalty != 0.5) fit$method<-paste(fit$method, " (penalty=",penalty,")",sep="")
 
-  # --------------- Call Fortran routine PLCOMP ------------------------------------
+  # --------------- Call native routine PLCOMP -------------------------------------
   if(pl) {
     PARMS <- c(PARMS[1:7], qchisq(1-alpha, 1), gconv, 0, 0, 0, 0, NTDE, penalty)
     IOARRAY <- rbind(rep(1, k+NTDE), rep(0, k+NTDE), coef.orig, matrix(0, 6, k+NTDE))
@@ -232,10 +229,7 @@ function(
     if(NTDE>0) IOARRAY[4,(k+1):(k+NTDE)] <- obj$timeind
     storage.mode(PARMS) <- "double"
     storage.mode(IOARRAY) <- "double"
-    value <- .Fortran("plcomp",
-                        CARDS,
-                        outpar = PARMS,
-                        outtab = IOARRAY, PACKAGE="coxphf")
+    value <- .coxphf_native("plcomp", CARDS, PARMS, IOARRAY)
     if(value$outpar[9]) warning("Numerical problem in estimating confidence intervals; check convergence.\n")
     fit$method.ci <- "Profile Likelihood"
     fit$ci.lower <- exp(value$outtab[4,  ] / Z.sd)

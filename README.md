@@ -8,14 +8,22 @@ The program fits profile penalized likelihood confidence intervals which were pr
 Wald confidence intervals.
 
 ## Installation
+
+The Rust backend requires a stable Rust toolchain with `cargo` and `rustc`.
+Install one from [rustup](https://rustup.rs/) before installing this fork.
+
 ```r
 # Install coxphf from CRAN
 install.packages("coxphf")
 
-# Or the development version from GitHub:
-# install.packages("devtools")
-devtools::install_github("georgheinze/coxphf")
+# Install the Rust/fast-interval branch from GitHub
+# install.packages("remotes")
+remotes::install_github("carbocation/coxphf@feature/rust-backend")
 ```
+
+The Rust backend is used by default. For numerical comparisons during
+development, the retained reference backend can be selected with
+`options(coxphf.native_backend = "fortran")`.
 
 ## Usage
 The call of the main function of the library follows the structure of the standard functions requiring a data.frame and a formula for the model specification. 

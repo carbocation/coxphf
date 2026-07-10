@@ -6,8 +6,9 @@ Authors@R: c(person("Georg", "Heinze", role=c("aut", "cre"), email="georg.heinze
 			 person("Meinhard", "Ploner", role=c("aut")), 
 			 person("Lena", "Jiricka", role=c("aut")),
 			 person("Gregor", "Steiner", role=c("aut")))
-Depends: R (>= 3.0.2)
+Depends: R (>= 4.1.0)
 Imports: survival, generics, tibble
+SystemRequirements: Cargo, rustc
 Description: Implements Firth's penalized maximum likelihood bias reduction method  for Cox regression
   which has been shown to provide a solution in case of monotone likelihood (nonconvergence of likelihood function), see 
   Heinze and Schemper (2001) and Heinze and Dunkler (2008).

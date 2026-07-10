@@ -37,3 +37,10 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+
+# Native build products
+src/*.o
+src/*.so
+src/*.dll
+src/Makevars
+src/rust/target/

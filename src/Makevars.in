@@ -1,0 +1,17 @@
+RUST_DIR = rust
+RUST_LIB = $(RUST_DIR)/target/release/libcoxphf_rust.a
+RUST_SOURCES = rust/src/lib.rs rust/src/fit.rs rust/src/likelihood.rs rust/src/matrix.rs rust/src/native_data.rs rust/src/profile.rs
+CARGO = @CARGO@
+RUST_BIN_DIR = @RUST_BIN_DIR@
+
+OBJECTS = coxphf.o init.o
+PKG_LIBS = $(RUST_LIB)
+
+$(SHLIB): $(RUST_LIB)
+
+$(RUST_LIB): $(RUST_DIR)/Cargo.toml $(RUST_DIR)/Cargo.lock $(RUST_SOURCES)
+	cd $(RUST_DIR) && PATH="$(RUST_BIN_DIR):$$PATH" "$(CARGO)" build --release --locked --jobs 2
+
+clean:
+	$(RM) $(OBJECTS) $(SHLIB)
+	cd $(RUST_DIR) && PATH="$(RUST_BIN_DIR):$$PATH" "$(CARGO)" clean

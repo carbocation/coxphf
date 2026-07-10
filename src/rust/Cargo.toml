@@ -1,0 +1,14 @@
+[package]
+name = "coxphf-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "coxphf_rust"
+crate-type = ["staticlib"]
+
+[profile.release]
+opt-level = 2
+debug = true
+codegen-units = 1

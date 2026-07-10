@@ -108,7 +108,8 @@ coxphftest <-
     obj$timedata <- scale(obj$timedata, FALSE, sd2)
     mmm <- cbind(obj$mm1, obj$timedata)
     
-    CARDS <- cbind(obj$mm1, obj$resp, ones, obj$timedata)   
+    start.order <- order(obj$resp[, 1], decreasing = TRUE)
+    CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)
     PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, 0.0001, 0, 0, 0, 0, NTDE, penalty)
     IOARRAY <- rbind(rep(1, k+NTDE), matrix(0, 2+k+NTDE, k + NTDE))
     if(!is.null(adapt)) IOARRAY[1,]<-adapt      
@@ -117,11 +118,8 @@ coxphftest <-
     storage.mode(CARDS) <- "double"
     storage.mode(PARMS) <- "double"
     storage.mode(IOARRAY) <- "double" #
-    # --------------- Aufruf Fortran - Makro FIRTHCOX ----------------------------------
-    value <- .Fortran("firthcox",
-                      CARDS,
-                      outpar = PARMS,
-                      outtab = IOARRAY, PACKAGE="coxphf")
+    # --------------- Call native routine FIRTHCOX -------------------------------------
+    value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
     if(value$outpar[8])
       warning("Error in routine FIRTHCOX; parms8 <> 0")
     loglik <- c(NA, value$outpar[11])
@@ -139,11 +137,8 @@ coxphftest <-
     IOARRAY[1, pos] <- 0
     if(!missing(values))
       IOARRAY[2, pos] <- values * Z.sd[pos]
-    # --------------- Aufruf Fortran - Makro FIRTHCOX ----------------------------------
-    value <- .Fortran("firthcox",
-                      CARDS,
-                      outpar = PARMS,
-                      outtab = IOARRAY, PACKAGE="coxphf")
+    # --------------- Call native routine FIRTHCOX -------------------------------------
+    value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
     if(value$outpar[8])
       warning("Error in routine FIRTHCOX; parms8 <> 0")
     loglik[1] <- value$outpar[11]

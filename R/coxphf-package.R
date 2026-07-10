@@ -25,7 +25,8 @@
 #'  the same individual should not appear twice within the same risk set.
 #'  
 #'  The package coxphf provides a comprehensive tool to facilitate the application of Firth's penalized 
-#'  likelihood method to Cox regression analysis. The core routines are written in Fortran 90, (and to our knowledge this is the first package written in Fortran 90). Some description of the problem of monotone likelihood
+#'  likelihood method to Cox regression analysis. This fork uses a Rust implementation of the numerical core
+#'  and retains the original Fortran 90 routines as a numerical reference. Some description of the problem of monotone likelihood
 #'  and Firth's penalized likelihood method as a solution can be found the web page 
 #'  \url{https://cemsiis.meduniwien.ac.at/en/kb/science-research/software/statistical-software/fccoxphf/}.
 #'  
