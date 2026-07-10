@@ -1,5 +1,5 @@
-use crate::likelihood::{evaluate, LikeResult};
-use crate::matrix::{invert, Matrix};
+use crate::likelihood::{evaluate, LikeResult, LikeWorkspace};
+use crate::matrix::{invert_into, Matrix};
 use crate::native_data::NativeData;
 
 pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
@@ -46,8 +46,10 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
     let mut separation = 0i32;
     let mut loglik = 0.0;
     let mut previous_loglik;
-    let mut score = vec![0.0; p];
-    let mut hessian = Matrix::zeros(p, p);
+    let mut like_workspace = LikeWorkspace::new(data);
+    let mut working = Matrix::zeros(p, p);
+    let mut variance = Matrix::zeros(p, p);
+    let mut inverse_workspace = vec![0usize; p];
     let mut likelihood_calls = 0i32;
 
     while !converged && iteration < maxit {
@@ -57,8 +59,16 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
         parms[9] = -10.0;
 
         if iteration == 1 {
-            let result = evaluate(data, &coefficients, ifirth, ngv, penalty, jcode);
-            assign_like_result(result, &mut loglik, &mut score, &mut hessian, &mut jcode);
+            let result = evaluate(
+                data,
+                &coefficients,
+                ifirth,
+                ngv,
+                penalty,
+                jcode,
+                &mut like_workspace,
+            );
+            assign_like_result(result, &mut loglik, &mut jcode);
             likelihood_calls += 1;
         }
 
@@ -68,11 +78,11 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
             return;
         }
 
-        let mut working = negative(&hessian);
-        let mut variance = invert(&working);
+        working.copy_negated_from(&like_workspace.hessian);
+        invert_into(&working, &mut variance, &mut inverse_workspace);
         if iteration == 1 {
             parms[11] = loglik;
-            parms[6] = quadratic_form(&variance, &score, None);
+            parms[6] = quadratic_form(&variance, &like_workspace.score, None);
         }
         parms[10] = loglik;
         parms[9] = f64::from(iteration);
@@ -82,8 +92,9 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
             for i in 0..p {
                 if flags[i] == 1 {
                     let mut change = 0.0;
-                    for j in 0..p {
-                        change += variance.get(i, j) * score[j] * f64::from(flags[j]);
+                    let variance_row = variance.row(i);
+                    for (j, &flag) in flags.iter().enumerate() {
+                        change += variance_row[j] * like_workspace.score[j] * f64::from(flag);
                     }
                     if change.abs() > step {
                         change = change / change.abs() * step;
@@ -92,10 +103,18 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                 }
             }
 
-            let result = evaluate(data, &coefficients, ifirth, ngv, penalty, jcode);
-            assign_like_result(result, &mut loglik, &mut score, &mut hessian, &mut jcode);
+            let result = evaluate(
+                data,
+                &coefficients,
+                ifirth,
+                ngv,
+                penalty,
+                jcode,
+                &mut like_workspace,
+            );
+            assign_like_result(result, &mut loglik, &mut jcode);
             likelihood_calls += 1;
-            working = negative(&hessian);
+            working.copy_negated_from(&like_workspace.hessian);
 
             let mut half_steps = 0i32;
             while loglik <= previous_loglik
@@ -115,12 +134,14 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                     for i in 0..p {
                         working.set(i, i, working.get(i, i) * relative_ridge);
                     }
-                    variance = invert(&working);
+                    invert_into(&working, &mut variance, &mut inverse_workspace);
                     for i in 0..p {
                         if flags[i] == 1 {
                             let mut change = 0.0;
-                            for j in 0..p {
-                                change += variance.get(i, j) * score[j] * f64::from(flags[j]);
+                            let variance_row = variance.row(i);
+                            for (j, &flag) in flags.iter().enumerate() {
+                                change +=
+                                    variance_row[j] * like_workspace.score[j] * f64::from(flag);
                             }
                             if change.abs() > step {
                                 change = change / change.abs() * step;
@@ -130,8 +151,16 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                     }
                 }
 
-                let result = evaluate(data, &coefficients, ifirth, ngv, penalty, jcode);
-                assign_like_result(result, &mut loglik, &mut score, &mut hessian, &mut jcode);
+                let result = evaluate(
+                    data,
+                    &coefficients,
+                    ifirth,
+                    ngv,
+                    penalty,
+                    jcode,
+                    &mut like_workspace,
+                );
+                assign_like_result(result, &mut loglik, &mut jcode);
                 likelihood_calls += 1;
             }
         }
@@ -142,14 +171,15 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                 if (coefficients[i] - previous_coefficients[i]).abs() > convergence {
                     converged = false;
                 }
-                if score[i].abs() * f64::from(flags[i]) > gradient_convergence {
+                if like_workspace.score[i].abs() * f64::from(flags[i]) > gradient_convergence {
                     converged = false;
                 }
             }
         }
     }
 
-    let variance = invert(&negative(&hessian));
+    working.copy_negated_from(&like_workspace.hessian);
+    invert_into(&working, &mut variance, &mut inverse_workspace);
     for j in 0..p {
         ioarray[2 + io_nrow * j] = coefficients[j];
         for i in 0..p {
@@ -158,14 +188,15 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
     }
 
     for i in 0..p {
-        if hessian.get(i, i).abs() < 0.0001 {
+        if like_workspace.hessian.get(i, i).abs() < 0.0001 {
             separation = 1;
         }
     }
     let _final_separation = separation;
 
-    parms[8] = quadratic_form(&variance, &score, Some(&flags));
-    parms[6] = score
+    parms[8] = quadratic_form(&variance, &like_workspace.score, Some(&flags));
+    parms[6] = like_workspace
+        .score
         .iter()
         .zip(&flags)
         .map(|(&value, &flag)| value.abs() * f64::from(flag))
@@ -176,21 +207,9 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
     parms[3] = f64::from(likelihood_calls);
 }
 
-fn assign_like_result(
-    result: LikeResult,
-    loglik: &mut f64,
-    score: &mut Vec<f64>,
-    hessian: &mut Matrix,
-    jcode: &mut i32,
-) {
+fn assign_like_result(result: LikeResult, loglik: &mut f64, jcode: &mut i32) {
     *loglik = result.loglik;
-    *score = result.score;
-    *hessian = result.hessian;
     *jcode = result.jcode;
-}
-
-pub(crate) fn negative(matrix: &Matrix) -> Matrix {
-    matrix.negated()
 }
 
 pub(crate) fn quadratic_form(matrix: &Matrix, vector: &[f64], flags: Option<&[i32]>) -> f64 {

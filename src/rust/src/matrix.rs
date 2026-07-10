@@ -49,10 +49,6 @@ impl Matrix {
         self.data[index] += value;
     }
 
-    pub(crate) fn as_mut_slice(&mut self) -> &mut [f64] {
-        &mut self.data
-    }
-
     pub(crate) fn fill(&mut self, value: f64) {
         self.data.fill(value);
     }
@@ -71,12 +67,18 @@ impl Matrix {
         &mut self.data[start..start + self.ncol]
     }
 
-    pub(crate) fn negated(&self) -> Self {
-        let mut result = self.clone();
-        for value in result.as_mut_slice() {
-            *value = -*value;
+    pub(crate) fn copy_from(&mut self, other: &Self) {
+        debug_assert_eq!(self.nrow, other.nrow);
+        debug_assert_eq!(self.ncol, other.ncol);
+        self.data.copy_from_slice(&other.data);
+    }
+
+    pub(crate) fn copy_negated_from(&mut self, other: &Self) {
+        debug_assert_eq!(self.nrow, other.nrow);
+        debug_assert_eq!(self.ncol, other.ncol);
+        for (target, &source) in self.data.iter_mut().zip(&other.data) {
+            *target = -source;
         }
-        result
     }
 
     pub(crate) fn row_dot(&self, row: usize, vector: &[f64]) -> f64 {
@@ -101,6 +103,10 @@ impl Cube {
             n,
             data: vec![0.0; n * n * n],
         }
+    }
+
+    pub(crate) fn fill(&mut self, value: f64) {
+        self.data.fill(value);
     }
 
     #[inline]
@@ -129,21 +135,36 @@ impl Cube {
 }
 
 /// Literal translation of the `vert`/`INVERT` routines in `coxphf.f90`.
+#[cfg(test)]
 pub(crate) fn invert(input: &Matrix) -> Matrix {
     let n = input.nrow;
     debug_assert_eq!(n, input.ncol);
     let mut value = input.clone();
+    let mut workspace = vec![0usize; n];
+    invert_in_place(&mut value, &mut workspace);
+    value
+}
+
+pub(crate) fn invert_into(input: &Matrix, output: &mut Matrix, workspace: &mut Vec<usize>) {
+    let n = input.nrow;
+    debug_assert_eq!(n, input.ncol);
+    output.copy_from(input);
+    workspace.resize(n, 0);
+    invert_in_place(output, workspace);
+}
+
+fn invert_in_place(value: &mut Matrix, workspace: &mut [usize]) {
+    let n = value.nrow;
 
     if n == 1 {
         if value.get(0, 0) != 0.0 {
             value.set(0, 0, 1.0 / value.get(0, 0));
         }
-        return value;
+        return;
     }
 
     // The scalar indices below remain one-based to mirror the original
     // control flow. Matrix accesses convert them to zero-based indices.
-    let mut workspace = vec![0usize; n];
     let mut k = 1usize;
     let mut l = 0usize;
     let mut m = 1usize;
@@ -173,7 +194,7 @@ pub(crate) fn invert(input: &Matrix) -> Matrix {
         let pivot = value.get(p - 1, l - 1);
         value.set(p - 1, l - 1, value.get(l - 1, l - 1));
         if pivot == 0.0 {
-            return value;
+            return;
         }
 
         value.set(l - 1, l - 1, -1.0);
@@ -222,20 +243,28 @@ pub(crate) fn invert(input: &Matrix) -> Matrix {
         }
         k -= 1;
     }
-
-    value
 }
 
 /// Literal translation of `FindDet`. The input is copied because the Fortran
 /// routine destroys its working matrix.
+#[cfg(test)]
 pub(crate) fn determinant(input: &Matrix) -> f64 {
-    let n = input.nrow;
-    debug_assert_eq!(n, input.ncol);
+    let mut matrix = input.clone();
+    determinant_in_place(&mut matrix)
+}
+
+pub(crate) fn determinant_with_workspace(input: &Matrix, workspace: &mut Matrix) -> f64 {
+    workspace.copy_from(input);
+    determinant_in_place(workspace)
+}
+
+fn determinant_in_place(matrix: &mut Matrix) -> f64 {
+    let n = matrix.nrow;
+    debug_assert_eq!(n, matrix.ncol);
     if n == 0 {
         return 1.0;
     }
 
-    let mut matrix = input.clone();
     let mut sign = 1.0;
 
     for k in 0..n.saturating_sub(1) {

@@ -1,8 +1,8 @@
 #![allow(clippy::needless_range_loop)]
 
-use crate::fit::{fit, negative};
-use crate::likelihood::evaluate;
-use crate::matrix::{invert, Matrix};
+use crate::fit::fit;
+use crate::likelihood::{evaluate, LikeWorkspace};
+use crate::matrix::{invert_into, Matrix};
 use crate::native_data::NativeData;
 
 pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
@@ -28,31 +28,45 @@ pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64])
         coefficients[j] = ioarray[2 + io_nrow * j];
     }
 
-    let initial = evaluate(data, &coefficients, ifirth, ngv, penalty, 0);
+    let mut like_workspace = LikeWorkspace::new(data);
+    let initial = evaluate(
+        data,
+        &coefficients,
+        ifirth,
+        ngv,
+        penalty,
+        0,
+        &mut like_workspace,
+    );
     let maximum_loglik = initial.loglik;
     let target_loglik = maximum_loglik - 0.5 * chi;
-    let initial_score = initial.score;
-    let initial_hessian = initial.hessian;
-    let initial_variance = invert(&negative(&initial_hessian));
+    let initial_score = like_workspace.score.clone();
+    let initial_hessian = like_workspace.hessian.clone();
+    let mut factor_input = Matrix::zeros(p, p);
+    let mut initial_variance = Matrix::zeros(p, p);
+    let mut variance = Matrix::zeros(p, p);
+    let mut inverse_workspace = vec![0usize; p];
+    factor_input.copy_negated_from(&initial_hessian);
+    invert_into(&factor_input, &mut initial_variance, &mut inverse_workspace);
     let saved_coefficients = coefficients.clone();
 
     let mut confidence_limits = Matrix::zeros(p, 2);
+    let mut unit = vec![0.0; p];
+    let mut score = vec![0.0; p];
     for coefficient_index in 0..p {
         if flags[coefficient_index] != 1 {
             continue;
         }
 
         for direction in 0..2 {
-            let mut unit = vec![0.0; p];
+            unit.fill(0.0);
             unit[coefficient_index] = 1.0;
             let direction_sign = if direction == 0 { -1.0 } else { 1.0 };
             let mut lambda = 0.0;
-            let mut variance = initial_variance.clone();
-            let mut score: Vec<f64> = initial_score
-                .iter()
-                .zip(&flags)
-                .map(|(&value, &flag)| value * f64::from(flag))
-                .collect();
+            variance.copy_from(&initial_variance);
+            for j in 0..p {
+                score[j] = initial_score[j] * f64::from(flags[j]);
+            }
             coefficients.clone_from(&saved_coefficients);
             let mut converged = false;
             let mut iteration = 0i32;
@@ -70,15 +84,21 @@ pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64])
                     coefficients[row] += change;
                 }
 
-                let result = evaluate(data, &coefficients, ifirth, ngv, penalty, 0);
+                let result = evaluate(
+                    data,
+                    &coefficients,
+                    ifirth,
+                    ngv,
+                    penalty,
+                    0,
+                    &mut like_workspace,
+                );
                 let loglik = result.loglik;
-                score = result
-                    .score
-                    .iter()
-                    .zip(&flags)
-                    .map(|(&value, &flag)| value * f64::from(flag))
-                    .collect();
-                variance = invert(&negative(&result.hessian));
+                for j in 0..p {
+                    score[j] = like_workspace.score[j] * f64::from(flags[j]);
+                }
+                factor_input.copy_negated_from(&like_workspace.hessian);
+                invert_into(&factor_input, &mut variance, &mut inverse_workspace);
 
                 let mut gradient_variance_gradient = 0.0;
                 for row in 0..p {

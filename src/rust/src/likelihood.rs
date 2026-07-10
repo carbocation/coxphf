@@ -1,14 +1,83 @@
 #![allow(clippy::needless_range_loop)]
 
-use crate::matrix::{determinant, invert, Cube, Matrix};
+use crate::matrix::{determinant_with_workspace, invert_into, Cube, Matrix};
 use crate::native_data::NativeData;
 
 const LOWEST: f64 = 1.0e-44;
 
-pub(crate) struct LikeResult {
-    pub(crate) loglik: f64,
+#[derive(Clone, Copy)]
+enum LikelihoodMode {
+    General,
+    IntervalFast,
+    Fast,
+}
+
+pub(crate) struct LikeWorkspace {
+    mode: LikelihoodMode,
     pub(crate) score: Vec<f64>,
     pub(crate) hessian: Matrix,
+    derivative_hessian: Cube,
+    x_all: Matrix,
+    mask: Vec<bool>,
+    bresx_all: Vec<f64>,
+    linear_predictor: Vec<f64>,
+    risk: Vec<f64>,
+    first_moment: Vec<f64>,
+    second_moment: Matrix,
+    third_moment: Option<Cube>,
+    information: Matrix,
+    information_inverse: Matrix,
+    determinant_workspace: Matrix,
+    inverse_workspace: Vec<usize>,
+}
+
+impl LikeWorkspace {
+    pub(crate) fn new(data: &NativeData) -> Self {
+        let n = data.n;
+        let p = data.p_total;
+        let fast_mode = data.ntde == 0
+            && data.t1.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                < data.t2.iter().copied().fold(f64::INFINITY, f64::min);
+        let mode = if fast_mode {
+            LikelihoodMode::Fast
+        } else if data.ntde == 0 {
+            LikelihoodMode::IntervalFast
+        } else {
+            LikelihoodMode::General
+        };
+
+        let mut x_all = Matrix::zeros(n, p);
+        for row in 0..n {
+            x_all.row_mut(row)[..data.p].copy_from_slice(data.x.row(row));
+        }
+
+        Self {
+            mode,
+            score: vec![0.0; p],
+            hessian: Matrix::zeros(p, p),
+            derivative_hessian: Cube::zeros(p),
+            x_all,
+            mask: vec![false; n],
+            bresx_all: vec![0.0; p],
+            linear_predictor: vec![0.0; n],
+            risk: vec![0.0; n],
+            first_moment: vec![0.0; p],
+            second_moment: Matrix::zeros(p, p),
+            third_moment: if data.ntde == 0 {
+                Some(Cube::zeros(p))
+            } else {
+                None
+            },
+            information: Matrix::zeros(p, p),
+            information_inverse: Matrix::zeros(p, p),
+            determinant_workspace: Matrix::zeros(p, p),
+            inverse_workspace: vec![0; p],
+        }
+    }
+}
+
+pub(crate) struct LikeResult {
+    pub(crate) loglik: f64,
     pub(crate) jcode: i32,
 }
 
@@ -19,76 +88,94 @@ pub(crate) fn evaluate(
     ngv: i32,
     penalty: f64,
     initial_jcode: i32,
+    workspace: &mut LikeWorkspace,
 ) -> LikeResult {
-    let n = data.n;
     let p = data.p_total;
     let mut loglik = 0.0;
-    let mut score = vec![0.0; p];
-    let mut hessian = Matrix::zeros(p, p);
-    let mut derivative_hessian = Cube::zeros(p);
-    let mut x_all = Matrix::zeros(n, p);
-    for i in 0..n {
-        x_all.row_mut(i)[..data.p].copy_from_slice(data.x.row(i));
-    }
+    workspace.score.fill(0.0);
+    workspace.hessian.fill(0.0);
+    workspace.derivative_hessian.fill(0.0);
 
-    let fast_mode = data.ntde == 0
-        && data.t1.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-            < data.t2.iter().copied().fold(f64::INFINITY, f64::min);
-    let interval_fast = data.ntde == 0 && !fast_mode;
-
-    if !fast_mode && !interval_fast {
-        evaluate_general(
+    let mode = workspace.mode;
+    let LikeWorkspace {
+        score,
+        hessian,
+        derivative_hessian,
+        x_all,
+        mask,
+        bresx_all,
+        linear_predictor,
+        risk,
+        first_moment,
+        second_moment,
+        third_moment,
+        information,
+        information_inverse,
+        determinant_workspace,
+        inverse_workspace,
+        ..
+    } = workspace;
+    match mode {
+        LikelihoodMode::General => evaluate_general(
             data,
             coefficients,
             ifirth,
             ngv,
-            &mut x_all,
+            x_all,
             &mut loglik,
-            &mut score,
-            &mut hessian,
-            &mut derivative_hessian,
-        );
-    }
-
-    if interval_fast {
-        evaluate_interval_fast(
+            score,
+            hessian,
+            derivative_hessian,
+            mask,
+            bresx_all,
+            linear_predictor,
+            risk,
+            first_moment,
+            second_moment,
+        ),
+        LikelihoodMode::IntervalFast => evaluate_interval_fast(
             data,
             coefficients,
             ifirth,
             ngv,
-            &x_all,
+            x_all,
             &mut loglik,
-            &mut score,
-            &mut hessian,
-            &mut derivative_hessian,
-        );
-    }
-
-    if fast_mode {
-        evaluate_fast(
+            score,
+            hessian,
+            derivative_hessian,
+            bresx_all,
+            linear_predictor,
+            risk,
+            first_moment,
+            second_moment,
+            third_moment
+                .as_mut()
+                .expect("interval mode requires third-moment workspace"),
+        ),
+        LikelihoodMode::Fast => evaluate_fast(
             data,
             coefficients,
             ifirth,
             ngv,
-            &x_all,
+            x_all,
             &mut loglik,
-            &mut score,
-            &mut hessian,
-            &mut derivative_hessian,
-        );
+            score,
+            hessian,
+            derivative_hessian,
+            linear_predictor,
+            risk,
+            first_moment,
+            second_moment,
+            third_moment
+                .as_mut()
+                .expect("fast mode requires third-moment workspace"),
+        ),
     }
 
     let mut jcode = initial_jcode;
     if ifirth != 0 {
-        let mut information = Matrix::zeros(p, p);
-        for j in 0..p {
-            let hessian_row = hessian.row(j);
-            let information_row = information.row_mut(j);
-            for k in 0..p {
-                information_row[k] = -hessian_row[k];
-            }
-        }
-        let information_inverse = invert(&information);
+        information.copy_negated_from(hessian);
+        invert_into(information, information_inverse, inverse_workspace);
 
         for j in 0..p {
             let mut trace = 0.0;
@@ -104,7 +191,7 @@ pub(crate) fn evaluate(
         let mut det = if p == 1 {
             information.get(0, 0)
         } else {
-            determinant(&information)
+            determinant_with_workspace(information, determinant_workspace)
         };
         if det < LOWEST {
             det = LOWEST;
@@ -113,12 +200,7 @@ pub(crate) fn evaluate(
         loglik += penalty * det.ln();
     }
 
-    LikeResult {
-        loglik,
-        score,
-        hessian,
-        jcode,
-    }
+    LikeResult { loglik, jcode }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,15 +214,15 @@ fn evaluate_general(
     score: &mut [f64],
     hessian: &mut Matrix,
     derivative_hessian: &mut Cube,
+    mask: &mut [bool],
+    bresx_all: &mut [f64],
+    linear_predictor: &mut [f64],
+    risk: &mut [f64],
+    first_moment: &mut [f64],
+    second_moment: &mut Matrix,
 ) {
     let n = data.n;
     let p = data.p_total;
-    let mut mask = vec![false; n];
-    let mut bresx_all = vec![0.0; p];
-    let mut linear_predictor = vec![0.0; n];
-    let mut risk = vec![0.0; n];
-    let mut first_moment = vec![0.0; p];
-    let mut second_moment = Matrix::zeros(p, p);
 
     for event_row in 0..n {
         if data.ibresc[event_row] == 0 {
@@ -236,8 +318,8 @@ fn evaluate_general(
                             k,
                             l,
                             risk_sum,
-                            &first_moment,
-                            &second_moment,
+                            first_moment,
+                            second_moment,
                         );
                         derivative_line[l] += -f64::from(data.ibresc[event_row])
                             * centered_third
@@ -262,14 +344,17 @@ fn evaluate_interval_fast(
     score: &mut [f64],
     hessian: &mut Matrix,
     derivative_hessian: &mut Cube,
+    bresx_all: &mut [f64],
+    linear_predictor: &mut [f64],
+    risk: &mut [f64],
+    first_moment: &mut [f64],
+    second_moment: &mut Matrix,
+    third_moment: &mut Cube,
 ) {
     let n = data.n;
-    let p = data.p_total;
-    let mut first_moment = vec![0.0; p];
-    let mut second_moment = Matrix::zeros(p, p);
-    let mut third_moment = Cube::zeros(p);
-    let mut linear_predictor = vec![0.0; n];
-    let mut risk = vec![0.0; n];
+    first_moment.fill(0.0);
+    second_moment.fill(0.0);
+    third_moment.fill(0.0);
     for row in 0..n {
         linear_predictor[row] = x_all.row_dot(row, coefficients);
         risk[row] = linear_predictor[row].exp();
@@ -278,7 +363,6 @@ fn evaluate_interval_fast(
     let mut risk_sum = 0.0;
     let mut add_row = n as isize - 1;
     let mut start_position = 0usize;
-    let mut bresx_all = vec![0.0; p];
 
     for event_row in (0..n).rev() {
         if data.ibresc[event_row] == 0 {
@@ -298,9 +382,9 @@ fn evaluate_interval_fast(
                 risk[row],
                 ifirth,
                 &mut risk_sum,
-                &mut first_moment,
-                &mut second_moment,
-                &mut third_moment,
+                first_moment,
+                second_moment,
+                third_moment,
             );
             add_row -= 1;
         }
@@ -317,9 +401,9 @@ fn evaluate_interval_fast(
                 risk[row],
                 ifirth,
                 &mut risk_sum,
-                &mut first_moment,
-                &mut second_moment,
-                &mut third_moment,
+                first_moment,
+                second_moment,
+                third_moment,
             );
             start_position += 1;
         }
@@ -333,11 +417,11 @@ fn evaluate_interval_fast(
             coefficients,
             ngv,
             ifirth,
-            &bresx_all,
+            bresx_all,
             risk_sum,
-            &first_moment,
-            &second_moment,
-            &third_moment,
+            first_moment,
+            second_moment,
+            third_moment,
             loglik,
             score,
             hessian,
@@ -357,14 +441,17 @@ fn evaluate_fast(
     score: &mut [f64],
     hessian: &mut Matrix,
     derivative_hessian: &mut Cube,
+    linear_predictor: &mut [f64],
+    risk: &mut [f64],
+    first_moment: &mut [f64],
+    second_moment: &mut Matrix,
+    third_moment: &mut Cube,
 ) {
     let n = data.n;
     let p = data.p_total;
-    let mut first_moment = vec![0.0; p];
-    let mut second_moment = Matrix::zeros(p, p);
-    let mut third_moment = Cube::zeros(p);
-    let mut linear_predictor = vec![0.0; n];
-    let mut risk = vec![0.0; n];
+    first_moment.fill(0.0);
+    second_moment.fill(0.0);
+    third_moment.fill(0.0);
     for row in 0..n {
         linear_predictor[row] = x_all.row_dot(row, coefficients);
         risk[row] = linear_predictor[row].exp();
@@ -396,9 +483,9 @@ fn evaluate_fast(
             risk[row],
             ifirth,
             &mut risk_sum,
-            &mut first_moment,
-            &mut second_moment,
-            &mut third_moment,
+            first_moment,
+            second_moment,
+            third_moment,
         );
 
         let contribution = linear_predictor[row] * f64::from(data.ic[row])
@@ -433,8 +520,8 @@ fn evaluate_fast(
                             k,
                             l,
                             risk_sum,
-                            &first_moment,
-                            &second_moment,
+                            first_moment,
+                            second_moment,
                         );
                         derivative_line[l] += -f64::from(current_events)
                             * centered_third
