@@ -16,18 +16,20 @@ impl Matrix {
 
     pub(crate) fn from_col_major(data: &[f64], nrow: usize, ncol: usize) -> Self {
         debug_assert_eq!(data.len(), nrow * ncol);
-        Self {
-            nrow,
-            ncol,
-            data: data.to_vec(),
+        let mut result = Self::zeros(nrow, ncol);
+        for col in 0..ncol {
+            for row in 0..nrow {
+                result.data[row * ncol + col] = data[row + nrow * col];
+            }
         }
+        result
     }
 
     #[inline]
     fn index(&self, row: usize, col: usize) -> usize {
         debug_assert!(row < self.nrow);
         debug_assert!(col < self.ncol);
-        row + self.nrow * col
+        row * self.ncol + col
     }
 
     #[inline]
@@ -51,6 +53,24 @@ impl Matrix {
         &mut self.data
     }
 
+    pub(crate) fn fill(&mut self, value: f64) {
+        self.data.fill(value);
+    }
+
+    #[inline]
+    pub(crate) fn row(&self, row: usize) -> &[f64] {
+        debug_assert!(row < self.nrow);
+        let start = row * self.ncol;
+        &self.data[start..start + self.ncol]
+    }
+
+    #[inline]
+    pub(crate) fn row_mut(&mut self, row: usize) -> &mut [f64] {
+        debug_assert!(row < self.nrow);
+        let start = row * self.ncol;
+        &mut self.data[start..start + self.ncol]
+    }
+
     pub(crate) fn negated(&self) -> Self {
         let mut result = self.clone();
         for value in result.as_mut_slice() {
@@ -62,8 +82,8 @@ impl Matrix {
     pub(crate) fn row_dot(&self, row: usize, vector: &[f64]) -> f64 {
         debug_assert_eq!(vector.len(), self.ncol);
         let mut value = 0.0;
-        for (col, &element) in vector.iter().enumerate() {
-            value += self.get(row, col) * element;
+        for (&matrix_value, &element) in self.row(row).iter().zip(vector) {
+            value += matrix_value * element;
         }
         value
     }
@@ -88,18 +108,23 @@ impl Cube {
         debug_assert!(first < self.n);
         debug_assert!(second < self.n);
         debug_assert!(third < self.n);
-        first + self.n * (second + self.n * third)
+        third + self.n * (second + self.n * first)
     }
 
     #[inline]
-    pub(crate) fn get(&self, first: usize, second: usize, third: usize) -> f64 {
-        self.data[self.index(first, second, third)]
+    pub(crate) fn line(&self, first: usize, second: usize) -> &[f64] {
+        debug_assert!(first < self.n);
+        debug_assert!(second < self.n);
+        let start = self.index(first, second, 0);
+        &self.data[start..start + self.n]
     }
 
     #[inline]
-    pub(crate) fn add(&mut self, first: usize, second: usize, third: usize, value: f64) {
-        let index = self.index(first, second, third);
-        self.data[index] += value;
+    pub(crate) fn line_mut(&mut self, first: usize, second: usize) -> &mut [f64] {
+        debug_assert!(first < self.n);
+        debug_assert!(second < self.n);
+        let start = self.index(first, second, 0);
+        &mut self.data[start..start + self.n]
     }
 }
 

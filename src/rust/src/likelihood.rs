@@ -27,10 +27,8 @@ pub(crate) fn evaluate(
     let mut hessian = Matrix::zeros(p, p);
     let mut derivative_hessian = Cube::zeros(p);
     let mut x_all = Matrix::zeros(n, p);
-    for j in 0..data.p {
-        for i in 0..n {
-            x_all.set(i, j, data.x.get(i, j));
-        }
+    for i in 0..n {
+        x_all.row_mut(i)[..data.p].copy_from_slice(data.x.row(i));
     }
 
     let fast_mode = data.ntde == 0
@@ -84,8 +82,10 @@ pub(crate) fn evaluate(
     if ifirth != 0 {
         let mut information = Matrix::zeros(p, p);
         for j in 0..p {
+            let hessian_row = hessian.row(j);
+            let information_row = information.row_mut(j);
             for k in 0..p {
-                information.set(j, k, -hessian.get(j, k));
+                information_row[k] = -hessian_row[k];
             }
         }
         let information_inverse = invert(&information);
@@ -93,8 +93,9 @@ pub(crate) fn evaluate(
         for j in 0..p {
             let mut trace = 0.0;
             for k in 0..p {
+                let information_row = information_inverse.row(k);
                 for l in 0..p {
-                    trace -= information_inverse.get(k, l) * derivative_hessian.get(j, l, k);
+                    trace -= information_row[l] * derivative_hessian.line(j, l)[k];
                 }
             }
             score[j] += trace * penalty;
@@ -175,23 +176,19 @@ fn evaluate_general(
             }
         }
 
-        for j in 0..p {
-            let mut first = 0.0;
-            for row in 0..n {
-                if mask[row] {
-                    first += x_all.get(row, j) * risk[row];
-                }
-            }
-            first_moment[j] = first;
-
-            for k in 0..p {
-                let mut second = 0.0;
-                for row in 0..n {
-                    if mask[row] {
-                        second += x_all.get(row, j) * x_all.get(row, k) * risk[row];
+        first_moment.fill(0.0);
+        second_moment.fill(0.0);
+        for row in 0..n {
+            if mask[row] {
+                let x_row = x_all.row(row);
+                for j in 0..p {
+                    let weighted_x = x_row[j] * risk[row];
+                    first_moment[j] += weighted_x;
+                    let second_row = second_moment.row_mut(j);
+                    for k in 0..p {
+                        second_row[k] += weighted_x * x_row[k];
                     }
                 }
-                second_moment.set(j, k, second);
             }
         }
 
@@ -207,32 +204,30 @@ fn evaluate_general(
             *loglik += contribution;
         }
 
+        let weights = data.score_weights.row(event_row);
         for j in 0..p {
-            let weight_j = data.score_weights.get(event_row, j);
+            let weight_j = weights[j];
             score[j] += (bresx_all[j]
                 - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)
                 * weight_j;
 
+            let hessian_row = hessian.row_mut(j);
             for k in 0..p {
-                let weight_k = data.score_weights.get(event_row, k);
+                let weight_k = weights[k];
                 let centered_second = (second_moment.get(j, k)
                     - first_moment[j] / risk_sum * first_moment[k])
                     / risk_sum;
-                hessian.add(
-                    j,
-                    k,
-                    -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k,
-                );
+                hessian_row[k] +=
+                    -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k;
 
                 if ifirth != 0 {
+                    let derivative_line = derivative_hessian.line_mut(j, k);
                     for l in 0..p {
                         let mut raw_third = 0.0;
                         for row in 0..n {
                             if mask[row] {
-                                raw_third += x_all.get(row, l)
-                                    * x_all.get(row, k)
-                                    * x_all.get(row, j)
-                                    * risk[row];
+                                let x_row = x_all.row(row);
+                                raw_third += x_row[l] * x_row[k] * x_row[j] * risk[row];
                             }
                         }
                         let centered_third = centered_third_moment(
@@ -244,16 +239,11 @@ fn evaluate_general(
                             &first_moment,
                             &second_moment,
                         );
-                        derivative_hessian.add(
-                            j,
-                            k,
-                            l,
-                            -f64::from(data.ibresc[event_row])
-                                * centered_third
-                                * weight_j
-                                * weight_k
-                                * data.score_weights.get(event_row, l),
-                        );
+                        derivative_line[l] += -f64::from(data.ibresc[event_row])
+                            * centered_third
+                            * weight_j
+                            * weight_k
+                            * weights[l];
                     }
                 }
             }
@@ -383,6 +373,8 @@ fn evaluate_fast(
     let mut risk_sum = 0.0;
     let mut tied_events = 0i32;
     for row in (0..n).rev() {
+        let x_row = x_all.row(row);
+        let weights = data.score_weights.row(row);
         let current_events;
         if row > 0 {
             if data.t2[row] == data.t2[row - 1] {
@@ -418,25 +410,25 @@ fn evaluate_fast(
         }
 
         for j in 0..p {
-            let weight_j = data.score_weights.get(row, j);
-            score[j] += (x_all.get(row, j) * f64::from(data.ic[row])
+            let weight_j = weights[j];
+            score[j] += (x_row[j] * f64::from(data.ic[row])
                 - f64::from(current_events) * first_moment[j] / risk_sum)
                 * weight_j;
+            let hessian_row = hessian.row_mut(j);
             for k in 0..p {
-                let weight_k = data.score_weights.get(row, k);
+                let weight_k = weights[k];
                 let centered_second = (second_moment.get(j, k)
                     - first_moment[j] / risk_sum * first_moment[k])
                     / risk_sum;
-                hessian.add(
-                    j,
-                    k,
-                    -f64::from(current_events) * centered_second * weight_j * weight_k,
-                );
+                hessian_row[k] +=
+                    -f64::from(current_events) * centered_second * weight_j * weight_k;
 
                 if ifirth != 0 {
+                    let third_line = third_moment.line(j, k);
+                    let derivative_line = derivative_hessian.line_mut(j, k);
                     for l in 0..p {
                         let centered_third = centered_third_moment(
-                            third_moment.get(j, k, l),
+                            third_line[l],
                             j,
                             k,
                             l,
@@ -444,16 +436,11 @@ fn evaluate_fast(
                             &first_moment,
                             &second_moment,
                         );
-                        derivative_hessian.add(
-                            j,
-                            k,
-                            l,
-                            -f64::from(current_events)
-                                * centered_third
-                                * weight_j
-                                * weight_k
-                                * data.score_weights.get(row, l),
-                        );
+                        derivative_line[l] += -f64::from(current_events)
+                            * centered_third
+                            * weight_j
+                            * weight_k
+                            * weights[l];
                     }
                 }
             }
@@ -475,15 +462,18 @@ fn update_risk_moments(
 ) {
     let p = first_moment.len();
     *risk_sum += direction * row_risk;
+    let x_row = x.row(row);
     for j in 0..p {
-        let first = x.get(row, j) * row_risk;
+        let first = x_row[j] * row_risk;
         first_moment[j] += direction * first;
+        let second_row = second_moment.row_mut(j);
         for k in 0..p {
-            let second = first * x.get(row, k);
-            second_moment.add(j, k, direction * second);
+            let second = first * x_row[k];
+            second_row[k] += direction * second;
             if ifirth == 1 {
+                let third_line = third_moment.line_mut(j, k);
                 for l in 0..p {
-                    third_moment.add(j, k, l, direction * second * x.get(row, l));
+                    third_line[l] += direction * second * x_row[l];
                 }
             }
         }
@@ -519,24 +509,25 @@ fn accumulate_aggregated_event(
         *loglik += contribution;
     }
 
+    let weights = data.score_weights.row(event_row);
     for j in 0..p {
-        let weight_j = data.score_weights.get(event_row, j);
+        let weight_j = weights[j];
         score[j] += (bresx_all[j] - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)
             * weight_j;
+        let hessian_row = hessian.row_mut(j);
         for k in 0..p {
-            let weight_k = data.score_weights.get(event_row, k);
+            let weight_k = weights[k];
             let centered_second =
                 (second_moment.get(j, k) - first_moment[j] / risk_sum * first_moment[k]) / risk_sum;
-            hessian.add(
-                j,
-                k,
-                -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k,
-            );
+            hessian_row[k] +=
+                -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k;
 
             if ifirth != 0 {
+                let third_line = third_moment.line(j, k);
+                let derivative_line = derivative_hessian.line_mut(j, k);
                 for l in 0..p {
                     let centered_third = centered_third_moment(
-                        third_moment.get(j, k, l),
+                        third_line[l],
                         j,
                         k,
                         l,
@@ -544,16 +535,11 @@ fn accumulate_aggregated_event(
                         first_moment,
                         second_moment,
                     );
-                    derivative_hessian.add(
-                        j,
-                        k,
-                        l,
-                        -f64::from(data.ibresc[event_row])
-                            * centered_third
-                            * weight_j
-                            * weight_k
-                            * data.score_weights.get(event_row, l),
-                    );
+                    derivative_line[l] += -f64::from(data.ibresc[event_row])
+                        * centered_third
+                        * weight_j
+                        * weight_k
+                        * weights[l];
                 }
             }
         }
