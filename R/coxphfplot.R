@@ -85,24 +85,18 @@ coxphfplot <-
                   epsilon=epsilon, maxstep=maxstep, firth=firth, pl=TRUE, penalty=penalty, adapt=adapt)
     coefs <- coef(fit)           
     covs <- fit$var              
-    n <- nrow(data)
     
     obj <- decomposeSurv(formula, data, sort=TRUE)
+    prepared <- .coxphf_prepare_design(obj)
+    obj <- prepared$obj
+    n <- nrow(obj$resp)
     NTDE <- obj$NTDE
-    mmm <- cbind(obj$mm1, obj$timedata)
+    Z.sd <- prepared$scale
     
     cov.name <- obj$covnames
     
     k <- ncol(obj$mm1)          # number covariates
     ones <- matrix(1, n, k+NTDE)
-    
-    ## standardise
-    sd1 <- apply(as.matrix(obj$mm1),2,sd)
-    sd2 <- apply(as.matrix(obj$timedata),2,sd)
-    Z.sd <- c(sd1, sd2 * sd1[obj$timeind])
-    obj$mm1 <- scale(obj$mm1, FALSE, sd1)
-    obj$timedata <- scale(obj$timedata, FALSE, sd2)
-    mmm <- cbind(obj$mm1, obj$timedata)
     
     start.order <- order(obj$resp[, 1], decreasing = TRUE)
     CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)
@@ -140,6 +134,7 @@ coxphfplot <-
       
       # --------------- Call native routine FIRTHCOX -------------------------------------
       value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+      .coxphf_assert_finite_native(value, "profile-plot estimation")
       if(value$outpar[8])
         warning("Error in routine FIRTHCOX; parms8 <> 0")
       res[i, 3] <- value$outpar[11]

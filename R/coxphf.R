@@ -161,11 +161,15 @@ function(
   # Note that sorting is important because the native code below expects
   # the data to be sorted by time and status
 	obj <- decomposeSurv(formula, data, sort = TRUE)
-	
+	prepared <- .coxphf_prepare_design(obj)
+	obj <- prepared$obj
+	n <- nrow(obj$resp)
+
 	# id is the row index before sorting (needed to correctly match the linear predictor later)
 	id <- as.numeric(rownames(obj$resp)) 
   NTDE <- obj$NTDE
-	mmm <- cbind(obj$mm1, obj$timedata)
+	mmm <- prepared$original_design
+  Z.sd <- prepared$scale
         
 	cov.name <- obj$covnames
   k <- ncol(obj$mm1)          # number of covariates
@@ -175,15 +179,7 @@ function(
       if(k+NTDE != length(adapt)) stop("length of adapt must match the number of parameters to be estimated.")
       if(any(adapt !=0 & adapt !=1)) stop("adapt must consist of 0s and 1s exclusively.")
   }
-          
-	  ## standardise
-	sd1 <- apply(as.matrix(obj$mm1),2,sd)
-	sd2 <- apply(as.matrix(obj$timedata),2,sd)
-	Z.sd <- c(sd1, sd2 * sd1[obj$timeind])
-	obj$mm1 <- scale(obj$mm1, FALSE, sd1)
-	obj$timedata <- scale(obj$timedata, FALSE, sd2)
-	mmm <- cbind(obj$mm1, obj$timedata)
-	   
+
 	start.order <- order(obj$resp[, 1], decreasing = TRUE)
 	CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)	  
   PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, gconv, 0, 0, 0, 0, NTDE, penalty)
@@ -197,6 +193,7 @@ function(
 
   ## --------------- Call native routine FIRTHCOX -----------------------------------
   value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+  .coxphf_assert_finite_native(value, "parameter estimation")
   if(value$outpar[8]) warning("Numerical problem in parameter estimation; check convergence.\n")
   outtab <- matrix(value$outtab, nrow=3+k+NTDE) #
 
@@ -214,7 +211,7 @@ function(
               loglik = value$outpar[12:11], iter = value$outpar[10],
               method.ties = "breslow", n = n, ##terms = terms(formula),
               y = obj$resp, formula = formula, call = match.call())
-  fit$means <- apply(mmm, 2, mean)
+  fit$means <- colMeans(mmm)
   fit$linear.predictors[id] <- as.vector(scale(mmm, fit$means, scale=FALSE) %*% coefs)
 	if(fit$iter>=maxit) warning("Convergence for parameter estimation not attained in ", maxit, " iterations.\n")
   if(firth) fit$method <- "Penalized ML"
@@ -230,6 +227,7 @@ function(
     storage.mode(PARMS) <- "double"
     storage.mode(IOARRAY) <- "double"
     value <- .coxphf_native("plcomp", CARDS, PARMS, IOARRAY)
+    .coxphf_assert_finite_native(value, "profile-likelihood estimation")
     if(value$outpar[9]) warning("Numerical problem in estimating confidence intervals; check convergence.\n")
     fit$method.ci <- "Profile Likelihood"
     fit$ci.lower <- exp(value$outtab[4,  ] / Z.sd)

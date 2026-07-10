@@ -91,22 +91,15 @@ coxphftest <-
     mf <- eval(mf, parent.frame())
     mt <- attr(mf, "terms")
     
-    n <- nrow(data)
-    
     obj <- decomposeSurv(formula, data, sort = TRUE)
+    prepared <- .coxphf_prepare_design(obj)
+    obj <- prepared$obj
+    n <- nrow(obj$resp)
     NTDE <- obj$NTDE
-    mmm <- cbind(obj$mm1, obj$timedata)
+    Z.sd <- prepared$scale
     cov.name <- obj$covnames
     k <- ncol(obj$mm1)
     ones <- matrix(1, n, k + NTDE)
-    
-    ## standardisierung
-    sd1 <- apply(as.matrix(obj$mm1),2,sd)
-    sd2 <- apply(as.matrix(obj$timedata),2,sd)
-    Z.sd <- c(sd1, sd2 * sd1[obj$timeind])
-    obj$mm1 <- scale(obj$mm1, FALSE, sd1)
-    obj$timedata <- scale(obj$timedata, FALSE, sd2)
-    mmm <- cbind(obj$mm1, obj$timedata)
     
     start.order <- order(obj$resp[, 1], decreasing = TRUE)
     CARDS <- cbind(obj$mm1, obj$resp, start.order, ones, obj$timedata)
@@ -120,6 +113,7 @@ coxphftest <-
     storage.mode(IOARRAY) <- "double" #
     # --------------- Call native routine FIRTHCOX -------------------------------------
     value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+    .coxphf_assert_finite_native(value, "hypothesis-test full-model estimation")
     if(value$outpar[8])
       warning("Error in routine FIRTHCOX; parms8 <> 0")
     loglik <- c(NA, value$outpar[11])
@@ -139,6 +133,7 @@ coxphftest <-
       IOARRAY[2, pos] <- values * Z.sd[pos]
     # --------------- Call native routine FIRTHCOX -------------------------------------
     value <- .coxphf_native("firthcox", CARDS, PARMS, IOARRAY)
+    .coxphf_assert_finite_native(value, "hypothesis-test restricted-model estimation")
     if(value$outpar[8])
       warning("Error in routine FIRTHCOX; parms8 <> 0")
     loglik[1] <- value$outpar[11]
