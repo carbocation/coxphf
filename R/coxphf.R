@@ -34,6 +34,12 @@
 #' @param firth use of Firth's penalized maximum likelihood (\code{firth=TRUE}, default) or the standard maximum likelihood method (\code{firth=FALSE}) for fitting the Cox model.
 #' @param adapt optional: specifies a vector of 1s and 0s, where 0 means that the corresponding parameter is fixed at 0, while 1 enables parameter estimation for that parameter. The length of adapt must be equal to the number of parameters to be estimated.
 #' @param penalty strength of Firth-type penalty. Defaults to 0.5.
+#' @param pl.select optional coefficient selection for profile likelihood
+#' confidence intervals and tests. The default, \code{NULL}, profiles every
+#' coefficient. Supply coefficient names, one-based positions, or a logical
+#' vector with one element per coefficient to profile only a subset. Other
+#' coefficients remain estimated as nuisance parameters, but their profile
+#' confidence limits, tests, and iteration counts are returned as \code{NA}.
 #' 
 #' @return The object returned is of the class \code{coxphf} and has the following attributes:
 #' \item{coefficients}{the parameter estimates}
@@ -56,6 +62,9 @@
 #' \item{call}{the function call}
 #' \item{terms}{the terms object used}
 #' \item{iter.ci}{the numbers of iterations needed for profile likelihood confidence interval estimation, and for maximizing the restricted likelihood for p-value computation.}
+#' \item{profiled}{a named logical vector indicating which coefficients were
+#' selected for profile likelihood confidence intervals and tests. Present only
+#' when \code{pl=TRUE}.}
 #' 
 #' @export
 #'
@@ -131,11 +140,15 @@ function(
  maxstep=0.5,
  firth=TRUE,
  adapt=NULL,
- penalty=0.5
+ penalty=0.5,
+ pl.select=NULL
 ){
 ### by MP und GH, 2006-2018
   if(!is.logical(firth)) stop("Please set option firth to TRUE or FALSE.\n")
   if(!is.logical(pl)) stop("Please set option pl to TRUE or FALSE.\n")
+  if(!pl && !is.null(pl.select)) {
+    stop("pl.select can only be used when pl=TRUE.")
+  }
 
   mt <- stats::terms(formula, data=data)
   if(length(attr(mt, "term.labels")) == 0L){
@@ -175,6 +188,12 @@ function(
       if(any(adapt !=0 & adapt !=1)) stop("adapt must consist of 0s and 1s exclusively.")
   }
 
+  profile.selection <- .coxphf_profile_selection(
+    pl.select,
+    cov.name,
+    adapt
+  )
+
 	start.order <- order(obj$resp[, 1], decreasing = TRUE)
   NATIVE <- .coxphf_native_payload(obj, start.order, backend)
   PARMS <- c(n, k, firth, maxit, maxhs, maxstep, epsilon, 1, gconv, 0, 0, 0, 0, NTDE, penalty)
@@ -204,7 +223,8 @@ function(
       PARMS,
       IOARRAY,
       PROFILE.PARMS,
-      PROFILE.IOARRAY
+      PROFILE.IOARRAY,
+      profile.selection
     )
     value <- combined.value$fit
     profile.value <- combined.value$profile
@@ -258,14 +278,20 @@ function(
     fit$iter.ci<-t(value$outtab[7:9,])
     colnames(fit$iter.ci)<-c("Lower", "Upper", "P-value")
     rownames(fit$iter.ci)<-cov.name
-    fit$ci.lower[fit$iter.ci[,1]>=maxit]<-NA
-    fit$ci.upper[fit$iter.ci[,2]>=maxit]<-NA
-    fit$prob[fit$iter.ci[,3]>=maxit]<-NA
-    if(any(fit$iter.ci>=maxit)) {
+    fit$ci.lower[profile.selection & fit$iter.ci[,1]>=maxit]<-NA
+    fit$ci.upper[profile.selection & fit$iter.ci[,2]>=maxit]<-NA
+    fit$prob[profile.selection & fit$iter.ci[,3]>=maxit]<-NA
+    if(any(fit$iter.ci[profile.selection, , drop=FALSE]>=maxit)) {
 					warning("Convergence in estimating profile likelihood CI or p-values not attained for all variables.\nConsider re-run with smaller maxstep and larger maxit.\n")
 		}
-		if(any(fit$iter.ci[,3]==-9)) warning("Numerical error in computing penalized likelihood ratio test for some parameters.\n")
-		fit$prob[fit$iter.ci[,3]==-9]<-NA
+		if(any(fit$iter.ci[profile.selection, 3]==-9)) warning("Numerical error in computing penalized likelihood ratio test for some parameters.\n")
+		fit$prob[profile.selection & fit$iter.ci[,3]==-9]<-NA
+
+    fit$ci.lower[!profile.selection] <- NA_real_
+    fit$ci.upper[!profile.selection] <- NA_real_
+    fit$prob[!profile.selection] <- NA_real_
+    fit$iter.ci[!profile.selection, ] <- NA_real_
+    fit$profiled <- stats::setNames(profile.selection, cov.name)
 				
   } else {
     fit$method.ci <- "Wald"
@@ -277,4 +303,52 @@ function(
   fit$terms <- mt
   attr(fit, "class") <- c("coxphf", "coxph")
   return(fit)
+}
+
+.coxphf_profile_selection <- function(selection, coefficient_names, adapt) {
+  coefficient_count <- length(coefficient_names)
+  if (is.null(selection)) {
+    return(rep(TRUE, coefficient_count))
+  }
+
+  if (is.character(selection)) {
+    unknown <- setdiff(selection, coefficient_names)
+    if (length(unknown) > 0L) {
+      stop(
+        "Unknown coefficient in pl.select: ",
+        paste(unknown, collapse = ", "),
+        "."
+      )
+    }
+    selected <- coefficient_names %in% selection
+  } else if (is.logical(selection)) {
+    if (length(selection) != coefficient_count || anyNA(selection)) {
+      stop("A logical pl.select must have one non-missing value per coefficient.")
+    }
+    selected <- selection
+  } else if (is.numeric(selection)) {
+    if (
+      anyNA(selection) || any(!is.finite(selection)) ||
+      any(selection != floor(selection)) ||
+      any(selection < 1L | selection > coefficient_count)
+    ) {
+      stop("A numeric pl.select must contain valid one-based coefficient positions.")
+    }
+    selected <- seq_len(coefficient_count) %in% as.integer(selection)
+  } else {
+    stop("pl.select must be NULL, coefficient names, positions, or a logical vector.")
+  }
+
+  if (!any(selected)) {
+    stop("pl.select must select at least one coefficient.")
+  }
+  if (!is.null(adapt) && any(selected & adapt == 0)) {
+    fixed <- coefficient_names[selected & adapt == 0]
+    stop(
+      "pl.select cannot include a coefficient fixed by adapt: ",
+      paste(fixed, collapse = ", "),
+      "."
+    )
+  }
+  selected
 }

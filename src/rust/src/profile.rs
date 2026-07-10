@@ -5,10 +5,16 @@ use crate::likelihood::{evaluate, LikeWorkspace};
 use crate::matrix::{invert_into, Matrix};
 use crate::native_data::NativeData;
 
-pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
+pub(crate) fn profile(
+    data: &NativeData,
+    parms: &mut [f64],
+    ioarray: &mut [f64],
+    profile_selection: Option<&[i32]>,
+) {
     let p = data.p_total;
     let io_nrow = 9usize;
     debug_assert_eq!(ioarray.len(), io_nrow * p);
+    debug_assert!(profile_selection.is_none_or(|selection| selection.len() == p));
 
     let ifirth = parms[2] as i32;
     let maxit = parms[3] as i32;
@@ -54,7 +60,10 @@ pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64])
     let mut unit = vec![0.0; p];
     let mut score = vec![0.0; p];
     for coefficient_index in 0..p {
-        if flags[coefficient_index] != 1 {
+        let selected = profile_selection
+            .map(|selection| selection[coefficient_index] != 0)
+            .unwrap_or(true);
+        if flags[coefficient_index] != 1 || !selected {
             continue;
         }
 
@@ -148,7 +157,10 @@ pub(crate) fn profile(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64])
 
     let mut likelihood_ratio = vec![0.0; p];
     for coefficient_index in 0..p {
-        if flags[coefficient_index] == 1 {
+        let selected = profile_selection
+            .map(|selection| selection[coefficient_index] != 0)
+            .unwrap_or(true);
+        if flags[coefficient_index] == 1 && selected {
             let mut restricted_parms = [0.0; 15];
             restricted_parms[0] = data.n as f64;
             restricted_parms[1] = data.p as f64;

@@ -71,7 +71,8 @@
 }
 
 .coxphf_native_fit_profile <- function(payload, fit_parms, fit_ioarray,
-                                       profile_parms, profile_ioarray) {
+                                       profile_parms, profile_ioarray,
+                                       profile_selection) {
   if (!is.list(payload)) {
     stop("Combined fit/profile execution requires the compact Rust payload.", call. = FALSE)
   }
@@ -85,6 +86,7 @@
     fit_ioarray,
     profile_parms,
     profile_ioarray,
+    as.integer(profile_selection),
     PACKAGE = "coxphf"
   )
   list(

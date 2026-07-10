@@ -131,7 +131,7 @@ pub unsafe extern "C" fn rust_plcomp(cards: *mut f64, parms: *mut f64, ioarray: 
         let ioarray_slice = slice::from_raw_parts_mut(ioarray, 9 * p_total);
         let data =
             native_data::NativeData::from_native_arrays(cards_slice, parms_slice, ioarray_slice, 9);
-        profile::profile(&data, parms_slice, ioarray_slice);
+        profile::profile(&data, parms_slice, ioarray_slice, None);
     }));
 
     if result.is_err() {
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn rust_plcomp_compact(
             ioarray_slice,
             9,
         );
-        profile::profile(&data, parms_slice, ioarray_slice);
+        profile::profile(&data, parms_slice, ioarray_slice, None);
     }));
 
     if result.is_err() {
@@ -215,6 +215,7 @@ pub unsafe extern "C" fn rust_fit_profile_compact(
     fit_ioarray: *mut f64,
     profile_parms: *mut f64,
     profile_ioarray: *mut f64,
+    profile_selection: *const i32,
 ) {
     if x.is_null()
         || response.is_null()
@@ -223,6 +224,7 @@ pub unsafe extern "C" fn rust_fit_profile_compact(
         || fit_ioarray.is_null()
         || profile_parms.is_null()
         || profile_ioarray.is_null()
+        || profile_selection.is_null()
     {
         return;
     }
@@ -249,6 +251,7 @@ pub unsafe extern "C" fn rust_fit_profile_compact(
         };
         let fit_ioarray_slice = slice::from_raw_parts_mut(fit_ioarray, fit_io_nrow * p_total);
         let profile_ioarray_slice = slice::from_raw_parts_mut(profile_ioarray, 9 * p_total);
+        let profile_selection_slice = slice::from_raw_parts(profile_selection, p_total);
         let data = native_data::NativeData::from_compact_arrays(
             x_slice,
             response_slice,
@@ -263,7 +266,12 @@ pub unsafe extern "C" fn rust_fit_profile_compact(
         for j in 0..p_total {
             profile_ioarray_slice[2 + 9 * j] = fit_ioarray_slice[2 + fit_io_nrow * j];
         }
-        profile::profile(&data, profile_parms_slice, profile_ioarray_slice);
+        profile::profile(
+            &data,
+            profile_parms_slice,
+            profile_ioarray_slice,
+            Some(profile_selection_slice),
+        );
     }));
 
     if result.is_err() {

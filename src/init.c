@@ -21,7 +21,7 @@ extern void rust_plcomp_compact(const double *, const double *, const int *,
                                const double *, double *, double *);
 extern void rust_fit_profile_compact(const double *, const double *, const int *,
                                      const double *, double *, double *,
-                                     double *, double *);
+                                     double *, double *, const int *);
 
 typedef void (*RustCompactRoutine)(const double *, const double *, const int *,
                                    const double *, double *, double *);
@@ -69,13 +69,20 @@ SEXP coxphf_rust_plcomp_call(SEXP x, SEXP response, SEXP start_order,
 SEXP coxphf_rust_fit_profile_call(SEXP x, SEXP response, SEXP start_order,
                                   SEXP timedata, SEXP fit_parms,
                                   SEXP fit_ioarray, SEXP profile_parms,
-                                  SEXP profile_ioarray)
+                                  SEXP profile_ioarray, SEXP profile_selection)
 {
     if (TYPEOF(x) != REALSXP || TYPEOF(response) != REALSXP ||
         TYPEOF(timedata) != REALSXP || TYPEOF(fit_parms) != REALSXP ||
         TYPEOF(fit_ioarray) != REALSXP || TYPEOF(profile_parms) != REALSXP ||
-        TYPEOF(profile_ioarray) != REALSXP || TYPEOF(start_order) != INTSXP) {
+        TYPEOF(profile_ioarray) != REALSXP || TYPEOF(start_order) != INTSXP ||
+        TYPEOF(profile_selection) != INTSXP) {
         Rf_error("Invalid combined Rust native payload types");
+    }
+
+    R_xlen_t p_total = (R_xlen_t) REAL(profile_parms)[1] +
+                       (R_xlen_t) REAL(profile_parms)[13];
+    if (XLENGTH(profile_selection) != p_total) {
+        Rf_error("Profile selection length does not match the coefficient count");
     }
 
     SEXP fit_outpar = PROTECT(Rf_duplicate(fit_parms));
@@ -85,7 +92,7 @@ SEXP coxphf_rust_fit_profile_call(SEXP x, SEXP response, SEXP start_order,
     rust_fit_profile_compact(
         REAL(x), REAL(response), INTEGER(start_order), REAL(timedata),
         REAL(fit_outpar), REAL(fit_outtab), REAL(profile_outpar),
-        REAL(profile_outtab));
+        REAL(profile_outtab), INTEGER(profile_selection));
 
     SEXP result = PROTECT(Rf_allocVector(VECSXP, 4));
     SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));
@@ -117,7 +124,7 @@ static const R_FortranMethodDef FortranEntries[] = {
 static const R_CallMethodDef CallEntries[] = {
     {"coxphf_rust_firthcox_call", (DL_FUNC) &coxphf_rust_firthcox_call, 6},
     {"coxphf_rust_plcomp_call",   (DL_FUNC) &coxphf_rust_plcomp_call,   6},
-    {"coxphf_rust_fit_profile_call", (DL_FUNC) &coxphf_rust_fit_profile_call, 8},
+    {"coxphf_rust_fit_profile_call", (DL_FUNC) &coxphf_rust_fit_profile_call, 9},
     {NULL, NULL, 0}
 };
 

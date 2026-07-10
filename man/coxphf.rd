@@ -17,7 +17,8 @@ coxphf(
   maxstep = 0.5,
   firth = TRUE,
   adapt = NULL,
-  penalty = 0.5
+  penalty = 0.5,
+  pl.select = NULL
 )
 }
 \arguments{
@@ -47,6 +48,13 @@ unless the new likelihood is greater than the old one, maximally doing \code{max
 \item{adapt}{optional: specifies a vector of 1s and 0s, where 0 means that the corresponding parameter is fixed at 0, while 1 enables parameter estimation for that parameter. The length of adapt must be equal to the number of parameters to be estimated.}
 
 \item{penalty}{strength of Firth-type penalty. Defaults to 0.5.}
+
+\item{pl.select}{optional coefficient selection for profile likelihood
+confidence intervals and tests. The default, \code{NULL}, profiles every
+coefficient. Supply coefficient names, one-based positions, or a logical
+vector with one element per coefficient to profile only a subset. Other
+coefficients remain estimated as nuisance parameters, but their profile
+confidence limits, tests, and iteration counts are returned as \code{NA}.}
 }
 \value{
 The object returned is of the class \code{coxphf} and has the following attributes:
@@ -70,6 +78,9 @@ The object returned is of the class \code{coxphf} and has the following attribut
 \item{call}{the function call}
 \item{terms}{the terms object used}
 \item{iter.ci}{the numbers of iterations needed for profile likelihood confidence interval estimation, and for maximizing the restricted likelihood for p-value computation.}
+\item{profiled}{a named logical vector indicating which coefficients were
+selected for profile likelihood confidence intervals and tests. Present only
+when \code{pl=TRUE}.}
 }
 \description{
 Implements Firth's penalized maximum likelihood bias reduction method  for Cox regression 

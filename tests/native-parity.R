@@ -69,6 +69,123 @@ expect_backend_parity(
   pl = TRUE,
   maxit = 100
 )
+
+# Selective profiling must leave the full-model fit unchanged and reproduce
+# the selected coefficient's result from a full profile. The unselected
+# coefficient remains a freely estimated nuisance parameter during profiling.
+full_profile <- fit_with_backend(
+  "rust",
+  Surv(start, stop, event) ~ x + z,
+  data = interval,
+  pl = TRUE,
+  maxit = 100
+)
+selected_profile <- fit_with_backend(
+  "rust",
+  Surv(start, stop, event) ~ x + z,
+  data = interval,
+  pl = TRUE,
+  pl.select = "x",
+  maxit = 100
+)
+stopifnot(isTRUE(all.equal(
+  unlist(full_profile[c("coefficients", "var", "loglik", "iter")]),
+  unlist(selected_profile[c("coefficients", "var", "loglik", "iter")]),
+  tolerance = 0,
+  check.attributes = TRUE
+)))
+stopifnot(isTRUE(all.equal(
+  c(
+    lower = full_profile$ci.lower[["x"]],
+    upper = full_profile$ci.upper[["x"]],
+    probability = full_profile$prob[["x"]],
+    iterations = full_profile$iter.ci["x", ]
+  ),
+  c(
+    lower = selected_profile$ci.lower[["x"]],
+    upper = selected_profile$ci.upper[["x"]],
+    probability = selected_profile$prob[["x"]],
+    iterations = selected_profile$iter.ci["x", ]
+  ),
+  tolerance = 0,
+  check.attributes = TRUE
+)))
+stopifnot(
+  identical(selected_profile$profiled, c(x = TRUE, z = FALSE)),
+  is.na(selected_profile$ci.lower[["z"]]),
+  is.na(selected_profile$ci.upper[["z"]]),
+  is.na(selected_profile$prob[["z"]]),
+  all(is.na(selected_profile$iter.ci["z", ]))
+)
+
+selected_fortran <- fit_with_backend(
+  "fortran",
+  Surv(start, stop, event) ~ x + z,
+  data = interval,
+  pl = TRUE,
+  pl.select = "x",
+  maxit = 100
+)
+stopifnot(isTRUE(all.equal(
+  fit_values(selected_fortran),
+  fit_values(selected_profile),
+  tolerance = 1e-10,
+  check.attributes = TRUE
+)))
+
+selected_by_position <- fit_with_backend(
+  "rust",
+  Surv(start, stop, event) ~ x + z,
+  data = interval,
+  pl = TRUE,
+  pl.select = 1L,
+  maxit = 100
+)
+stopifnot(isTRUE(all.equal(
+  fit_values(selected_by_position),
+  fit_values(selected_profile),
+  tolerance = 0,
+  check.attributes = TRUE
+)))
+
+profile_error <- function(...) {
+  tryCatch(
+    {
+      fit_with_backend("rust", ...)
+      NA_character_
+    },
+    error = conditionMessage
+  )
+}
+stopifnot(grepl(
+  "Unknown coefficient in pl.select",
+  profile_error(
+    Surv(start, stop, event) ~ x + z,
+    data = interval,
+    pl.select = "missing"
+  ),
+  fixed = TRUE
+))
+stopifnot(grepl(
+  "pl.select can only be used when pl=TRUE",
+  profile_error(
+    Surv(start, stop, event) ~ x + z,
+    data = interval,
+    pl = FALSE,
+    pl.select = "x"
+  ),
+  fixed = TRUE
+))
+stopifnot(grepl(
+  "fixed by adapt",
+  profile_error(
+    Surv(start, stop, event) ~ x + z,
+    data = interval,
+    pl.select = "z",
+    adapt = c(1, 0)
+  ),
+  fixed = TRUE
+))
 expect_backend_parity(
   Surv(start, stop, event) ~ x + x:log(stop),
   data = interval,
@@ -122,6 +239,20 @@ stopifnot(isTRUE(all.equal(
   tolerance = 0,
   check.attributes = TRUE
 )))
+
+# New arguments remain at the end of the public signature so historical
+# positional calls still map their fourth argument to alpha.
+positional_fit <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ x,
+  standard,
+  FALSE,
+  0.1
+)
+stopifnot(
+  identical(positional_fit$alpha, 0.1),
+  identical(positional_fit$method.ci, "Wald")
+)
 
 # Covariate origins must not affect a Cox fit. A large calendar-year shift
 # previously made risk-score exponentiation overflow even though the shifted
