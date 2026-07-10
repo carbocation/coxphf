@@ -1,6 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 
-use crate::fit::fit;
+use crate::fit::fit_with_workspace;
 use crate::likelihood::{evaluate, LikeWorkspace};
 use crate::matrix::{invert_into, Matrix};
 use crate::native_data::NativeData;
@@ -10,6 +10,17 @@ pub(crate) fn profile(
     parms: &mut [f64],
     ioarray: &mut [f64],
     profile_selection: Option<&[i32]>,
+) {
+    let mut like_workspace = LikeWorkspace::new(data);
+    profile_with_workspace(data, parms, ioarray, profile_selection, &mut like_workspace);
+}
+
+pub(crate) fn profile_with_workspace(
+    data: &NativeData,
+    parms: &mut [f64],
+    ioarray: &mut [f64],
+    profile_selection: Option<&[i32]>,
+    like_workspace: &mut LikeWorkspace,
 ) {
     let p = data.p_total;
     let io_nrow = 9usize;
@@ -34,16 +45,7 @@ pub(crate) fn profile(
         coefficients[j] = ioarray[2 + io_nrow * j];
     }
 
-    let mut like_workspace = LikeWorkspace::new(data);
-    let initial = evaluate(
-        data,
-        &coefficients,
-        ifirth,
-        ngv,
-        penalty,
-        0,
-        &mut like_workspace,
-    );
+    let initial = evaluate(data, &coefficients, ifirth, ngv, penalty, 0, like_workspace);
     let maximum_loglik = initial.loglik;
     let target_loglik = maximum_loglik - 0.5 * chi;
     let initial_score = like_workspace.score.clone();
@@ -93,15 +95,7 @@ pub(crate) fn profile(
                     coefficients[row] += change;
                 }
 
-                let result = evaluate(
-                    data,
-                    &coefficients,
-                    ifirth,
-                    ngv,
-                    penalty,
-                    0,
-                    &mut like_workspace,
-                );
+                let result = evaluate(data, &coefficients, ifirth, ngv, penalty, 0, like_workspace);
                 let loglik = result.loglik;
                 for j in 0..p {
                     score[j] = like_workspace.score[j] * f64::from(flags[j]);
@@ -188,7 +182,12 @@ pub(crate) fn profile(
                 restricted_io[3 + restricted_nrow * (data.p + j)] = (data.ftmap[j] + 1) as f64;
             }
 
-            fit(data, &mut restricted_parms, &mut restricted_io);
+            fit_with_workspace(
+                data,
+                &mut restricted_parms,
+                &mut restricted_io,
+                like_workspace,
+            );
             if restricted_parms[7] >= 1.0 {
                 parms[8] = 2.0;
             }

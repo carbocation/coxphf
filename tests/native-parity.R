@@ -193,6 +193,13 @@ expect_backend_parity(
   maxit = 100
 )
 expect_backend_parity(
+  Surv(start, stop, event) ~ x + x:log(stop),
+  data = interval,
+  pl = TRUE,
+  pl.select = "x",
+  maxit = 100
+)
+expect_backend_parity(
   Surv(time, status) ~ x + z,
   data = ties,
   pl = FALSE

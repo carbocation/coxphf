@@ -3,9 +3,20 @@ use crate::matrix::{invert_into, Matrix};
 use crate::native_data::NativeData;
 
 pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
+    let mut like_workspace = LikeWorkspace::new(data);
+    fit_with_workspace(data, parms, ioarray, &mut like_workspace);
+}
+
+pub(crate) fn fit_with_workspace(
+    data: &NativeData,
+    parms: &mut [f64],
+    ioarray: &mut [f64],
+    like_workspace: &mut LikeWorkspace,
+) {
     let p = data.p_total;
     let io_nrow = 3 + p;
     debug_assert_eq!(ioarray.len(), io_nrow * p);
+    like_workspace.reset_derivatives();
 
     let ifirth = parms[2] as i32;
     let maxit = parms[3] as i32;
@@ -46,7 +57,6 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
     let mut separation = 0i32;
     let mut loglik = 0.0;
     let mut previous_loglik;
-    let mut like_workspace = LikeWorkspace::new(data);
     let mut working = Matrix::zeros(p, p);
     let mut variance = Matrix::zeros(p, p);
     let mut inverse_workspace = vec![0usize; p];
@@ -66,7 +76,7 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                 ngv,
                 penalty,
                 jcode,
-                &mut like_workspace,
+                like_workspace,
             );
             assign_like_result(result, &mut loglik, &mut jcode);
             likelihood_calls += 1;
@@ -110,7 +120,7 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                 ngv,
                 penalty,
                 jcode,
-                &mut like_workspace,
+                like_workspace,
             );
             assign_like_result(result, &mut loglik, &mut jcode);
             likelihood_calls += 1;
@@ -158,7 +168,7 @@ pub(crate) fn fit(data: &NativeData, parms: &mut [f64], ioarray: &mut [f64]) {
                     ngv,
                     penalty,
                     jcode,
-                    &mut like_workspace,
+                    like_workspace,
                 );
                 assign_like_result(result, &mut loglik, &mut jcode);
                 likelihood_calls += 1;

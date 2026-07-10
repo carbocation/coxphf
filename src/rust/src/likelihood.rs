@@ -47,9 +47,15 @@ impl LikeWorkspace {
             LikelihoodMode::General
         };
 
-        let mut x_all = Matrix::zeros(n, p);
-        for row in 0..n {
-            x_all.row_mut(row)[..data.p].copy_from_slice(data.x.row(row));
+        let mut x_all = if data.ntde == 0 {
+            Matrix::zeros(0, 0)
+        } else {
+            Matrix::zeros(n, p)
+        };
+        if data.ntde != 0 {
+            for row in 0..n {
+                x_all.row_mut(row)[..data.p].copy_from_slice(data.x.row(row));
+            }
         }
 
         Self {
@@ -69,6 +75,12 @@ impl LikeWorkspace {
             determinant_workspace: Matrix::zeros(p, p),
             inverse_workspace: vec![0; p],
         }
+    }
+
+    pub(crate) fn reset_derivatives(&mut self) {
+        self.score.fill(0.0);
+        self.hessian.fill(0.0);
+        self.derivative_hessian.fill(0.0);
     }
 }
 
@@ -135,7 +147,7 @@ pub(crate) fn evaluate(
             coefficients,
             ifirth,
             ngv,
-            x_all,
+            &data.x,
             &mut loglik,
             score,
             hessian,
@@ -151,7 +163,7 @@ pub(crate) fn evaluate(
             coefficients,
             ifirth,
             ngv,
-            x_all,
+            &data.x,
             &mut loglik,
             score,
             hessian,
@@ -214,10 +226,9 @@ fn evaluate_general(
     let n = data.n;
     let p = data.p_total;
 
-    for event_row in 0..n {
-        if data.ibresc[event_row] == 0 {
-            continue;
-        }
+    for event_index in 0..data.event_rows.len() {
+        let event_row = data.event_rows[event_index];
+        let event_count = data.ibresc[event_index];
 
         let event_time = data.t2[event_row] - 0.00001;
         for row in 0..n {
@@ -225,7 +236,7 @@ fn evaluate_general(
         }
 
         for j in 0..data.p {
-            bresx_all[j] = data.bresx.get(event_row, j);
+            bresx_all[j] = data.bresx.get(event_index, j);
         }
         for j in data.p..p {
             let time_column = j - data.p;
@@ -236,7 +247,7 @@ fn evaluate_general(
                     x_all.set(row, j, data.x.get(row, source_column) * time_value);
                 }
             }
-            bresx_all[j] = time_value * data.bresx.get(event_row, source_column);
+            bresx_all[j] = time_value * data.bresx.get(event_index, source_column);
         }
 
         let mut risk_sum = 0.0;
@@ -271,7 +282,7 @@ fn evaluate_general(
         for j in 0..p {
             numerator += bresx_all[j] * coefficients[j];
         }
-        let contribution = numerator - f64::from(data.ibresc[event_row]) * log_risk_sum;
+        let contribution = numerator - f64::from(event_count) * log_risk_sum;
         if ngv == p as i32 {
             *loglik += contribution * data.score_weight(event_row, 0);
         } else {
@@ -281,9 +292,8 @@ fn evaluate_general(
         let weights = data.score_weights(event_row);
         for j in 0..p {
             let weight_j = weights[j];
-            score[j] += (bresx_all[j]
-                - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)
-                * weight_j;
+            score[j] +=
+                (bresx_all[j] - f64::from(event_count) * first_moment[j] / risk_sum) * weight_j;
 
             for k in j..p {
                 let weight_k = weights[k];
@@ -293,7 +303,7 @@ fn evaluate_general(
                 hessian.add(
                     j,
                     k,
-                    -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k,
+                    -f64::from(event_count) * centered_second * weight_j * weight_k,
                 );
 
                 if ifirth != 0 {
@@ -308,7 +318,7 @@ fn evaluate_general(
                             first_moment,
                             second_moment,
                         );
-                        derivative_tail[l - k] += -f64::from(data.ibresc[event_row])
+                        derivative_tail[l - k] += -f64::from(event_count)
                             * centered_third
                             * weight_j
                             * weight_k
@@ -348,10 +358,8 @@ fn evaluate_interval_fast(
     let mut add_row = n as isize - 1;
     let mut start_position = 0usize;
 
-    for event_row in (0..n).rev() {
-        if data.ibresc[event_row] == 0 {
-            continue;
-        }
+    for event_index in (0..data.event_rows.len()).rev() {
+        let event_row = data.event_rows[event_index];
         let event_time = data.t2[event_row] - 0.00001;
 
         while add_row >= 0 {
@@ -392,10 +400,11 @@ fn evaluate_interval_fast(
         }
 
         for j in 0..data.p {
-            bresx_all[j] = data.bresx.get(event_row, j);
+            bresx_all[j] = data.bresx.get(event_index, j);
         }
         accumulate_aggregated_event(
             data,
+            event_index,
             event_row,
             coefficients,
             ngv,
@@ -548,6 +557,7 @@ fn update_risk_moments(
 #[allow(clippy::too_many_arguments)]
 fn accumulate_aggregated_event(
     data: &NativeData,
+    event_index: usize,
     event_row: usize,
     coefficients: &[f64],
     ngv: i32,
@@ -563,11 +573,12 @@ fn accumulate_aggregated_event(
     derivative_hessian: &mut SymmetricCube,
 ) {
     let p = data.p_total;
+    let event_count = data.ibresc[event_index];
     let mut numerator = 0.0;
     for j in 0..p {
         numerator += bresx_all[j] * coefficients[j];
     }
-    let contribution = numerator - f64::from(data.ibresc[event_row]) * risk_sum.max(LOWEST).ln();
+    let contribution = numerator - f64::from(event_count) * risk_sum.max(LOWEST).ln();
     if ngv == p as i32 {
         *loglik += contribution * data.score_weight(event_row, 0);
     } else {
@@ -577,8 +588,7 @@ fn accumulate_aggregated_event(
     let weights = data.score_weights(event_row);
     for j in 0..p {
         let weight_j = weights[j];
-        score[j] += (bresx_all[j] - f64::from(data.ibresc[event_row]) * first_moment[j] / risk_sum)
-            * weight_j;
+        score[j] += (bresx_all[j] - f64::from(event_count) * first_moment[j] / risk_sum) * weight_j;
         for k in j..p {
             let weight_k = weights[k];
             let centered_second =
@@ -586,7 +596,7 @@ fn accumulate_aggregated_event(
             hessian.add(
                 j,
                 k,
-                -f64::from(data.ibresc[event_row]) * centered_second * weight_j * weight_k,
+                -f64::from(event_count) * centered_second * weight_j * weight_k,
             );
 
             if ifirth != 0 {
@@ -601,11 +611,8 @@ fn accumulate_aggregated_event(
                         first_moment,
                         second_moment,
                     );
-                    derivative_tail[l - k] += -f64::from(data.ibresc[event_row])
-                        * centered_third
-                        * weight_j
-                        * weight_k
-                        * weights[l];
+                    derivative_tail[l - k] +=
+                        -f64::from(event_count) * centered_third * weight_j * weight_k * weights[l];
                 }
             }
         }

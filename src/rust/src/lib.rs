@@ -262,15 +262,22 @@ pub unsafe extern "C" fn rust_fit_profile_compact(
             fit_io_nrow,
         );
 
-        fit::fit(&data, fit_parms_slice, fit_ioarray_slice);
+        let mut like_workspace = likelihood::LikeWorkspace::new(&data);
+        fit::fit_with_workspace(
+            &data,
+            fit_parms_slice,
+            fit_ioarray_slice,
+            &mut like_workspace,
+        );
         for j in 0..p_total {
             profile_ioarray_slice[2 + 9 * j] = fit_ioarray_slice[2 + fit_io_nrow * j];
         }
-        profile::profile(
+        profile::profile_with_workspace(
             &data,
             profile_parms_slice,
             profile_ioarray_slice,
             Some(profile_selection_slice),
+            &mut like_workspace,
         );
     }));
 

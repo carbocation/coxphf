@@ -15,6 +15,7 @@ pub(crate) struct NativeData {
     unit_score_weights: Vec<f64>,
     pub(crate) bresx: Matrix,
     pub(crate) ibresc: Vec<i32>,
+    pub(crate) event_rows: Vec<usize>,
     pub(crate) ft: Matrix,
     pub(crate) ftmap: Vec<usize>,
 }
@@ -132,25 +133,27 @@ impl NativeData {
         ftmap: Vec<usize>,
     ) -> Self {
         let p_total = p + ntde;
-        let mut result = Self {
+        let mut score_weights = score_weights;
+        let (event_rows, bresx, ibresc) =
+            aggregate_breslow_events(&x, p, &t2, &ic, score_weights.as_mut());
+        Self {
             n,
             p,
             ntde,
             p_total,
-            x: x.clone(),
+            x,
             t1,
             t2,
-            ic: ic.clone(),
+            ic,
             start_order,
             score_weights,
             unit_score_weights: vec![1.0; p_total],
-            bresx: x,
-            ibresc: ic,
+            bresx,
+            ibresc,
+            event_rows,
             ft,
             ftmap,
-        };
-        result.combine_breslow_ties();
-        result
+        }
     }
 
     #[inline]
@@ -166,28 +169,57 @@ impl NativeData {
             .as_ref()
             .map_or(1.0, |weights| weights.get(row, col))
     }
+}
 
-    fn combine_breslow_ties(&mut self) {
-        if self.n < 2 {
-            return;
+fn aggregate_breslow_events(
+    x: &Matrix,
+    p: usize,
+    t2: &[f64],
+    ic: &[i32],
+    mut score_weights: Option<&mut Matrix>,
+) -> (Vec<usize>, Matrix, Vec<i32>) {
+    let n = ic.len();
+    let mut groups = Vec::new();
+    let mut start = 0usize;
+
+    while start < n {
+        let mut end = start;
+        while end + 1 < n && ic[end + 1] >= 1 && (t2[end] - t2[end + 1]).abs() < 0.0001 {
+            end += 1;
         }
 
-        for i in (0..(self.n - 1)).rev() {
-            if self.ic[i + 1] >= 1 && (self.t2[i] - self.t2[i + 1]).abs() < 0.0001 {
-                if let Some(score_weights) = &mut self.score_weights {
-                    for j in 0..self.p_total {
-                        score_weights.set(i, j, score_weights.get(i + 1, j));
-                    }
+        if let Some(weights) = score_weights.as_deref_mut() {
+            if end > start {
+                let final_weights = weights.row(end).to_vec();
+                for row in start..end {
+                    weights.row_mut(row).copy_from_slice(&final_weights);
                 }
-                for j in 0..self.p {
-                    let next = self.bresx.get(i + 1, j);
-                    self.bresx.add(i, j, next);
-                }
-                self.ibresc[i] += self.ibresc[i + 1];
-                self.ibresc[i + 1] = 0;
             }
         }
+
+        let event_count = ic[start..=end].iter().sum();
+        if event_count != 0 {
+            groups.push((start, end, event_count));
+        }
+        start = end + 1;
     }
+
+    let mut event_rows = Vec::with_capacity(groups.len());
+    let mut event_counts = Vec::with_capacity(groups.len());
+    let mut event_covariates = Matrix::zeros(groups.len(), p);
+    for (event_index, &(start, end, event_count)) in groups.iter().enumerate() {
+        event_rows.push(start);
+        event_counts.push(event_count);
+        for column in 0..p {
+            let mut value = x.get(end, column);
+            for row in (start..end).rev() {
+                value += x.get(row, column);
+            }
+            event_covariates.set(event_index, column, value);
+        }
+    }
+
+    (event_rows, event_covariates, event_counts)
 }
 
 fn to_zero_based_index(value: f64) -> usize {
@@ -199,4 +231,36 @@ fn to_zero_based_index(value: f64) -> usize {
 fn to_zero_based_integer(value: i32) -> usize {
     assert!(value >= 1);
     (value - 1) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn breslow_events_are_compacted_without_changing_tie_aggregation() {
+        let mut x = Matrix::zeros(5, 2);
+        let mut weights = Matrix::zeros(5, 2);
+        for row in 0..5 {
+            x.set(row, 0, row as f64 + 1.0);
+            x.set(row, 1, 10.0 * (row as f64 + 1.0));
+            weights.set(row, 0, 100.0 + row as f64);
+            weights.set(row, 1, 200.0 + row as f64);
+        }
+
+        let (event_rows, bresx, event_counts) = aggregate_breslow_events(
+            &x,
+            2,
+            &[1.0, 1.0, 2.0, 2.0, 3.0],
+            &[1, 1, 0, 1, 0],
+            Some(&mut weights),
+        );
+
+        assert_eq!(event_rows, vec![0, 2]);
+        assert_eq!(event_counts, vec![2, 1]);
+        assert_eq!(bresx.row(0), &[3.0, 30.0]);
+        assert_eq!(bresx.row(1), &[7.0, 70.0]);
+        assert_eq!(weights.row(0), &[101.0, 201.0]);
+        assert_eq!(weights.row(2), &[103.0, 203.0]);
+    }
 }
