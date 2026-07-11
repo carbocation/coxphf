@@ -30,6 +30,7 @@ pub(crate) struct LikeWorkspace {
     information_inverse: Matrix,
     determinant_workspace: Matrix,
     inverse_workspace: Vec<usize>,
+    pattern_moments: Matrix,
 }
 
 impl LikeWorkspace {
@@ -74,6 +75,12 @@ impl LikeWorkspace {
             information_inverse: Matrix::zeros(p, p),
             determinant_workspace: Matrix::zeros(p, p),
             inverse_workspace: vec![0; p],
+            pattern_moments: Matrix::zeros(
+                data.pattern_data
+                    .as_ref()
+                    .map_or(0, |patterns| patterns.patterns.nrow()),
+                moment_count(p),
+            ),
         }
     }
 
@@ -105,6 +112,14 @@ pub(crate) fn evaluate(
     if ifirth != 0 {
         workspace.derivative_hessian.fill(0.0);
     }
+    if let Some(patterns) = &data.pattern_data {
+        prepare_pattern_moments(
+            &patterns.patterns,
+            coefficients,
+            ifirth,
+            &mut workspace.pattern_moments,
+        );
+    }
 
     let mode = workspace.mode;
     let LikeWorkspace {
@@ -122,6 +137,7 @@ pub(crate) fn evaluate(
         information_inverse,
         determinant_workspace,
         inverse_workspace,
+        pattern_moments,
         ..
     } = workspace;
     match mode {
@@ -157,6 +173,7 @@ pub(crate) fn evaluate(
             first_moment,
             second_moment,
             third_moment,
+            pattern_moments,
         ),
         LikelihoodMode::Fast => evaluate_fast(
             data,
@@ -171,6 +188,7 @@ pub(crate) fn evaluate(
             first_moment,
             second_moment,
             third_moment,
+            pattern_moments,
         ),
     }
 
@@ -346,6 +364,7 @@ fn evaluate_interval_fast(
     first_moment: &mut [f64],
     second_moment: &mut SymmetricMatrix,
     third_moment: &mut SymmetricCube,
+    pattern_moments: &Matrix,
 ) {
     let n = data.n;
     first_moment.fill(0.0);
@@ -367,17 +386,32 @@ fn evaluate_interval_fast(
             if data.t2[row] < event_time {
                 break;
             }
-            risk[row] = x_all.row_dot(row, coefficients).exp();
-            update_risk_moments(
-                x_all.row(row),
-                1.0,
-                risk[row],
-                ifirth,
-                &mut risk_sum,
-                first_moment,
-                second_moment,
-                third_moment,
-            );
+            if let Some(patterns) = &data.pattern_data {
+                let moments = pattern_moments.row(patterns.row_pattern[row]);
+                risk[row] = moments[0];
+                update_precomputed_moments(
+                    moments,
+                    1.0,
+                    ifirth,
+                    &mut risk_sum,
+                    first_moment,
+                    second_moment,
+                    third_moment,
+                );
+            } else {
+                risk[row] = x_all.row_dot(row, coefficients).exp();
+                update_risk_moments(
+                    x_all.row(row),
+                    1.0,
+                    risk[row],
+                    ifirth,
+                    data.sparse_moments,
+                    &mut risk_sum,
+                    first_moment,
+                    second_moment,
+                    third_moment,
+                );
+            }
             add_row -= 1;
         }
 
@@ -386,16 +420,29 @@ fn evaluate_interval_fast(
             if data.t1[row] < event_time {
                 break;
             }
-            update_risk_moments(
-                x_all.row(row),
-                -1.0,
-                risk[row],
-                ifirth,
-                &mut risk_sum,
-                first_moment,
-                second_moment,
-                third_moment,
-            );
+            if let Some(patterns) = &data.pattern_data {
+                update_precomputed_moments(
+                    pattern_moments.row(patterns.row_pattern[row]),
+                    -1.0,
+                    ifirth,
+                    &mut risk_sum,
+                    first_moment,
+                    second_moment,
+                    third_moment,
+                );
+            } else {
+                update_risk_moments(
+                    x_all.row(row),
+                    -1.0,
+                    risk[row],
+                    ifirth,
+                    data.sparse_moments,
+                    &mut risk_sum,
+                    first_moment,
+                    second_moment,
+                    third_moment,
+                );
+            }
             start_position += 1;
         }
 
@@ -436,6 +483,7 @@ fn evaluate_fast(
     first_moment: &mut [f64],
     second_moment: &mut SymmetricMatrix,
     third_moment: &mut SymmetricCube,
+    pattern_moments: &Matrix,
 ) {
     let n = data.n;
     let p = data.p_total;
@@ -450,7 +498,10 @@ fn evaluate_fast(
     for row in (0..n).rev() {
         let x_row = x_all.row(row);
         let linear_predictor = x_all.row_dot(row, coefficients);
-        let row_risk = linear_predictor.exp();
+        let row_risk = data.pattern_data.as_ref().map_or_else(
+            || linear_predictor.exp(),
+            |patterns| pattern_moments.get(patterns.row_pattern[row], 0),
+        );
         let weights = data.score_weights(row);
         let current_events;
         if row > 0 {
@@ -466,16 +517,29 @@ fn evaluate_fast(
             tied_events = 0;
         }
 
-        update_risk_moments(
-            x_row,
-            1.0,
-            row_risk,
-            ifirth,
-            &mut risk_sum,
-            first_moment,
-            second_moment,
-            third_moment,
-        );
+        if let Some(patterns) = &data.pattern_data {
+            update_precomputed_moments(
+                pattern_moments.row(patterns.row_pattern[row]),
+                1.0,
+                ifirth,
+                &mut risk_sum,
+                first_moment,
+                second_moment,
+                third_moment,
+            );
+        } else {
+            update_risk_moments(
+                x_row,
+                1.0,
+                row_risk,
+                ifirth,
+                data.sparse_moments,
+                &mut risk_sum,
+                first_moment,
+                second_moment,
+                third_moment,
+            );
+        }
 
         let contribution = linear_predictor * f64::from(data.ic[row])
             - f64::from(current_events) * risk_sum.max(LOWEST).ln();
@@ -525,11 +589,54 @@ fn evaluate_fast(
     }
 }
 
+fn moment_count(p: usize) -> usize {
+    1 + p + p * (p + 1) / 2 + p * (p + 1) * (p + 2) / 6
+}
+
+fn prepare_pattern_moments(
+    patterns: &Matrix,
+    coefficients: &[f64],
+    ifirth: i32,
+    output: &mut Matrix,
+) {
+    let p = coefficients.len();
+    for pattern in 0..patterns.nrow() {
+        let x_row = patterns.row(pattern);
+        let row_risk = patterns.row_dot(pattern, coefficients).exp();
+        let moments = output.row_mut(pattern);
+        moments[0] = row_risk;
+        let mut position = 1;
+        for j in 0..p {
+            moments[position] = x_row[j] * row_risk;
+            position += 1;
+        }
+        for j in 0..p {
+            let first = x_row[j] * row_risk;
+            for k in j..p {
+                moments[position] = first * x_row[k];
+                position += 1;
+            }
+        }
+        if ifirth == 1 {
+            for j in 0..p {
+                let first = x_row[j] * row_risk;
+                for k in j..p {
+                    let second = first * x_row[k];
+                    for l in k..p {
+                        moments[position] = second * x_row[l];
+                        position += 1;
+                    }
+                }
+            }
+            debug_assert_eq!(position, moment_count(p));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn update_risk_moments(
-    x_row: &[f64],
+fn update_precomputed_moments(
+    moments: &[f64],
     direction: f64,
-    row_risk: f64,
     ifirth: i32,
     risk_sum: &mut f64,
     first_moment: &mut [f64],
@@ -537,7 +644,70 @@ fn update_risk_moments(
     third_moment: &mut SymmetricCube,
 ) {
     let p = first_moment.len();
+    *risk_sum += direction * moments[0];
+    let mut position = 1;
+    for target in first_moment.iter_mut() {
+        *target += direction * moments[position];
+        position += 1;
+    }
+    for target in second_moment.data_mut() {
+        *target += direction * moments[position];
+        position += 1;
+    }
+    if ifirth == 1 {
+        for target in third_moment.data_mut() {
+            *target += direction * moments[position];
+            position += 1;
+        }
+        debug_assert_eq!(position, moment_count(p));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_risk_moments(
+    x_row: &[f64],
+    direction: f64,
+    row_risk: f64,
+    ifirth: i32,
+    sparse_moments: bool,
+    risk_sum: &mut f64,
+    first_moment: &mut [f64],
+    second_moment: &mut SymmetricMatrix,
+    third_moment: &mut SymmetricCube,
+) {
+    let p = first_moment.len();
     *risk_sum += direction * row_risk;
+
+    if sparse_moments {
+        let mut active_p = p;
+        while active_p > 0 && x_row[active_p - 1] == 0.0 {
+            active_p -= 1;
+        }
+        for j in 0..active_p {
+            if x_row[j] == 0.0 {
+                continue;
+            }
+            let first = x_row[j] * row_risk;
+            first_moment[j] += direction * first;
+            for k in j..active_p {
+                if x_row[k] == 0.0 {
+                    continue;
+                }
+                let second = first * x_row[k];
+                second_moment.add(j, k, direction * second);
+                if ifirth == 1 {
+                    let third_tail = third_moment.tail_mut(j, k);
+                    for l in k..active_p {
+                        if x_row[l] != 0.0 {
+                            third_tail[l - k] += direction * second * x_row[l];
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     for j in 0..p {
         let first = x_row[j] * row_risk;
         first_moment[j] += direction * first;
@@ -637,4 +807,79 @@ fn centered_third_moment(
             * (second_moment.get(l, j) - first_moment[l] * first_moment[j] / risk_sum)
             / risk_sum)
         / risk_sum
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_and_dense_moment_updates_are_identical() {
+        let x = [1.5, -0.5, 0.0];
+        let mut dense_risk = 0.0;
+        let mut sparse_risk = 0.0;
+        let mut dense_first = vec![0.0; 3];
+        let mut sparse_first = vec![0.0; 3];
+        let mut dense_second = SymmetricMatrix::zeros(3);
+        let mut sparse_second = SymmetricMatrix::zeros(3);
+        let mut dense_third = SymmetricCube::zeros(3);
+        let mut sparse_third = SymmetricCube::zeros(3);
+        let mut pattern_risk = 0.0;
+        let mut pattern_first = vec![0.0; 3];
+        let mut pattern_second = SymmetricMatrix::zeros(3);
+        let mut pattern_third = SymmetricCube::zeros(3);
+
+        update_risk_moments(
+            &x,
+            1.0,
+            1.0,
+            1,
+            false,
+            &mut dense_risk,
+            &mut dense_first,
+            &mut dense_second,
+            &mut dense_third,
+        );
+        update_risk_moments(
+            &x,
+            1.0,
+            1.0,
+            1,
+            true,
+            &mut sparse_risk,
+            &mut sparse_first,
+            &mut sparse_second,
+            &mut sparse_third,
+        );
+
+        let mut patterns = Matrix::zeros(1, 3);
+        patterns.row_mut(0).copy_from_slice(&x);
+        let mut prepared = Matrix::zeros(1, moment_count(3));
+        let coefficients = [0.0; 3];
+        prepare_pattern_moments(&patterns, &coefficients, 1, &mut prepared);
+        update_precomputed_moments(
+            prepared.row(0),
+            1.0,
+            1,
+            &mut pattern_risk,
+            &mut pattern_first,
+            &mut pattern_second,
+            &mut pattern_third,
+        );
+
+        assert_eq!(dense_risk, sparse_risk);
+        assert_eq!(dense_risk, pattern_risk);
+        assert_eq!(dense_first, sparse_first);
+        assert_eq!(dense_first, pattern_first);
+        for j in 0..3 {
+            for k in j..3 {
+                assert_eq!(dense_second.get(j, k), sparse_second.get(j, k));
+                assert_eq!(dense_second.get(j, k), pattern_second.get(j, k));
+                for l in k..3 {
+                    assert_eq!(dense_third.get(j, k, l), sparse_third.get(j, k, l));
+                    assert_eq!(dense_third.get(j, k, l), pattern_third.get(j, k, l));
+                }
+            }
+        }
+    }
 }

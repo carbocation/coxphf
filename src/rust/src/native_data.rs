@@ -1,4 +1,11 @@
 use crate::matrix::Matrix;
+use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+pub(crate) struct PatternData {
+    pub(crate) row_pattern: Vec<usize>,
+    pub(crate) patterns: Matrix,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeData {
@@ -18,6 +25,8 @@ pub(crate) struct NativeData {
     pub(crate) event_rows: Vec<usize>,
     pub(crate) ft: Matrix,
     pub(crate) ftmap: Vec<usize>,
+    pub(crate) sparse_moments: bool,
+    pub(crate) pattern_data: Option<PatternData>,
 }
 
 impl NativeData {
@@ -133,6 +142,12 @@ impl NativeData {
         ftmap: Vec<usize>,
     ) -> Self {
         let p_total = p + ntde;
+        let sparse_moments = ntde == 0 && has_sparse_column(&x, n, p);
+        let pattern_data = if ntde == 0 {
+            build_pattern_data(&x, n, p)
+        } else {
+            None
+        };
         let mut score_weights = score_weights;
         let (event_rows, bresx, ibresc) =
             aggregate_breslow_events(&x, p, &t2, &ic, score_weights.as_mut());
@@ -153,6 +168,8 @@ impl NativeData {
             event_rows,
             ft,
             ftmap,
+            sparse_moments,
+            pattern_data,
         }
     }
 
@@ -169,6 +186,52 @@ impl NativeData {
             .as_ref()
             .map_or(1.0, |weights| weights.get(row, col))
     }
+}
+
+fn build_pattern_data(x: &Matrix, n: usize, p: usize) -> Option<PatternData> {
+    // Pattern lookup is worthwhile only when each distinct row is reused many
+    // times. Sparse binary exposures combined with discrete nuisance
+    // covariates are the primary high-throughput case.
+    let maximum_patterns = (n / 8).max(1);
+    let mut lookup: HashMap<Vec<u64>, usize> = HashMap::new();
+    let mut row_pattern = Vec::with_capacity(n);
+    let mut pattern_rows: Vec<Vec<f64>> = Vec::new();
+
+    for row in 0..n {
+        let key: Vec<u64> = x
+            .row(row)
+            .iter()
+            .map(|&value| if value == 0.0 { 0 } else { value.to_bits() })
+            .collect();
+        let pattern = if let Some(&pattern) = lookup.get(&key) {
+            pattern
+        } else {
+            if pattern_rows.len() >= maximum_patterns {
+                return None;
+            }
+            let pattern = pattern_rows.len();
+            pattern_rows.push(x.row(row).to_vec());
+            lookup.insert(key, pattern);
+            pattern
+        };
+        row_pattern.push(pattern);
+    }
+
+    let mut patterns = Matrix::zeros(pattern_rows.len(), p);
+    for (row, values) in pattern_rows.iter().enumerate() {
+        patterns.row_mut(row).copy_from_slice(values);
+    }
+    Some(PatternData {
+        row_pattern,
+        patterns,
+    })
+}
+
+fn has_sparse_column(x: &Matrix, n: usize, p: usize) -> bool {
+    (0..p).any(|column| {
+        let zero_count = (0..n).filter(|&row| x.get(row, column) == 0.0).count();
+        zero_count as f64 / n as f64 >= 0.8
+    })
 }
 
 fn aggregate_breslow_events(
@@ -236,6 +299,38 @@ fn to_zero_based_integer(value: i32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_columns_are_detected_from_structural_zeros() {
+        let mut x = Matrix::zeros(5, 2);
+        for row in 0..5 {
+            x.set(row, 0, row as f64 + 1.0);
+        }
+        x.set(4, 1, 2.0);
+
+        assert!(has_sparse_column(&x, 5, 2));
+        x.set(0, 1, 1.0);
+        assert!(!has_sparse_column(&x, 5, 2));
+    }
+
+    #[test]
+    fn repeated_design_rows_are_compacted_into_patterns() {
+        let mut repeated = Matrix::zeros(32, 2);
+        for row in 0..32 {
+            repeated.set(row, 0, (row % 2) as f64);
+            repeated.set(row, 1, ((row / 2) % 2) as f64);
+        }
+        let patterns = build_pattern_data(&repeated, 32, 2).unwrap();
+        assert_eq!(patterns.patterns.nrow(), 4);
+        assert_eq!(patterns.row_pattern.len(), 32);
+
+        let mut unique = Matrix::zeros(32, 2);
+        for row in 0..32 {
+            unique.set(row, 0, row as f64);
+            unique.set(row, 1, row as f64 + 0.5);
+        }
+        assert!(build_pattern_data(&unique, 32, 2).is_none());
+    }
 
     #[test]
     fn breslow_events_are_compacted_without_changing_tie_aggregation() {

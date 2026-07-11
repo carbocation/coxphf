@@ -63,6 +63,11 @@ impl Matrix {
         &mut self.data[start..start + self.ncol]
     }
 
+    #[inline]
+    pub(crate) fn nrow(&self) -> usize {
+        self.nrow
+    }
+
     pub(crate) fn copy_from(&mut self, other: &Self) {
         debug_assert_eq!(self.nrow, other.nrow);
         debug_assert_eq!(self.ncol, other.ncol);
@@ -110,6 +115,11 @@ impl SymmetricMatrix {
 
     pub(crate) fn fill(&mut self, value: f64) {
         self.data.fill(value);
+    }
+
+    #[inline]
+    pub(crate) fn data_mut(&mut self) -> &mut [f64] {
+        &mut self.data
     }
 
     #[inline]
@@ -162,6 +172,11 @@ impl SymmetricCube {
 
     pub(crate) fn fill(&mut self, value: f64) {
         self.data.fill(value);
+    }
+
+    #[inline]
+    pub(crate) fn data_mut(&mut self) -> &mut [f64] {
+        &mut self.data
     }
 
     #[inline]

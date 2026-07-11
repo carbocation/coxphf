@@ -184,6 +184,31 @@ expect_backend_parity(
   maxit = 15
 )
 
+# Repeated design rows activate the Rust pattern-risk cache. This is the common
+# sparse-exposure shape: a rare binary exposure and discrete nuisance
+# covariates, with observation-specific survival intervals.
+set.seed(73)
+pattern_n <- 240L
+pattern_start <- runif(pattern_n, 40, 70)
+pattern_followup <- rexp(pattern_n, 0.08)
+pattern_censor <- runif(pattern_n, 1, 10)
+pattern_data <- data.frame(
+  start = pattern_start,
+  stop = pattern_start + pmin(pattern_followup, pattern_censor),
+  event = as.integer(pattern_followup <= pattern_censor),
+  birth_year = sample(1950:1954, pattern_n, replace = TRUE),
+  sex = rbinom(pattern_n, 1, 0.45),
+  exposure = rbinom(pattern_n, 1, 0.03)
+)
+expect_backend_parity(
+  Surv(start, stop, event) ~ birth_year + sex + exposure,
+  data = pattern_data,
+  pl = TRUE,
+  pl.select = "exposure",
+  inference.only = TRUE,
+  maxit = 100
+)
+
 inference_profile <- fit_with_backend(
   "rust",
   Surv(start, stop, event) ~ x + z,
