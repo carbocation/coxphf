@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PatternData {
-    pub(crate) row_pattern: Vec<usize>,
+    pub(crate) row_pattern: Vec<u32>,
     pub(crate) patterns: Matrix,
 }
 
@@ -192,8 +192,12 @@ fn build_pattern_data(x: &Matrix, n: usize, p: usize) -> Option<PatternData> {
     // Pattern lookup is worthwhile only when each distinct row is reused many
     // times. Sparse binary exposures combined with discrete nuisance
     // covariates are the primary high-throughput case.
-    let maximum_patterns = (n / 8).max(1);
-    let mut lookup: HashMap<Vec<u64>, usize> = HashMap::new();
+    let maximum_patterns = (n / 8).max(1).min(u32::MAX as usize);
+    if p == 3 {
+        return build_three_column_pattern_data(x, n, maximum_patterns);
+    }
+
+    let mut lookup: HashMap<Vec<u64>, u32> = HashMap::new();
     let mut row_pattern = Vec::with_capacity(n);
     let mut pattern_rows: Vec<Vec<f64>> = Vec::new();
 
@@ -209,7 +213,7 @@ fn build_pattern_data(x: &Matrix, n: usize, p: usize) -> Option<PatternData> {
             if pattern_rows.len() >= maximum_patterns {
                 return None;
             }
-            let pattern = pattern_rows.len();
+            let pattern = pattern_rows.len() as u32;
             pattern_rows.push(x.row(row).to_vec());
             lookup.insert(key, pattern);
             pattern
@@ -217,6 +221,55 @@ fn build_pattern_data(x: &Matrix, n: usize, p: usize) -> Option<PatternData> {
         row_pattern.push(pattern);
     }
 
+    finish_pattern_data(row_pattern, pattern_rows, p)
+}
+
+fn build_three_column_pattern_data(
+    x: &Matrix,
+    n: usize,
+    maximum_patterns: usize,
+) -> Option<PatternData> {
+    let mut lookup: HashMap<[u64; 3], u32> = HashMap::new();
+    let mut row_pattern = Vec::with_capacity(n);
+    let mut pattern_rows: Vec<Vec<f64>> = Vec::new();
+
+    for row in 0..n {
+        let values = x.row(row);
+        let key = [
+            normalized_float_bits(values[0]),
+            normalized_float_bits(values[1]),
+            normalized_float_bits(values[2]),
+        ];
+        let pattern = if let Some(&pattern) = lookup.get(&key) {
+            pattern
+        } else {
+            if pattern_rows.len() >= maximum_patterns {
+                return None;
+            }
+            let pattern = pattern_rows.len() as u32;
+            pattern_rows.push(values.to_vec());
+            lookup.insert(key, pattern);
+            pattern
+        };
+        row_pattern.push(pattern);
+    }
+
+    finish_pattern_data(row_pattern, pattern_rows, 3)
+}
+
+fn normalized_float_bits(value: f64) -> u64 {
+    if value == 0.0 {
+        0
+    } else {
+        value.to_bits()
+    }
+}
+
+fn finish_pattern_data(
+    row_pattern: Vec<u32>,
+    pattern_rows: Vec<Vec<f64>>,
+    p: usize,
+) -> Option<PatternData> {
     let mut patterns = Matrix::zeros(pattern_rows.len(), p);
     for (row, values) in pattern_rows.iter().enumerate() {
         patterns.row_mut(row).copy_from_slice(values);
@@ -330,6 +383,16 @@ mod tests {
             unique.set(row, 1, row as f64 + 0.5);
         }
         assert!(build_pattern_data(&unique, 32, 2).is_none());
+
+        let mut three_column = Matrix::zeros(64, 3);
+        for row in 0..64 {
+            three_column.set(row, 0, (row % 2) as f64);
+            three_column.set(row, 1, ((row / 2) % 2) as f64);
+            three_column.set(row, 2, ((row / 4) % 2) as f64);
+        }
+        let three_column_patterns = build_pattern_data(&three_column, 64, 3).unwrap();
+        assert_eq!(three_column_patterns.patterns.nrow(), 8);
+        assert_eq!(three_column_patterns.row_pattern.len(), 64);
     }
 
     #[test]

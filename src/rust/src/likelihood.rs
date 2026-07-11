@@ -387,7 +387,7 @@ fn evaluate_interval_fast(
                 break;
             }
             if let Some(patterns) = &data.pattern_data {
-                let moments = pattern_moments.row(patterns.row_pattern[row]);
+                let moments = pattern_moments.row(patterns.row_pattern[row] as usize);
                 risk[row] = moments[0];
                 update_precomputed_moments(
                     moments,
@@ -422,7 +422,7 @@ fn evaluate_interval_fast(
             }
             if let Some(patterns) = &data.pattern_data {
                 update_precomputed_moments(
-                    pattern_moments.row(patterns.row_pattern[row]),
+                    pattern_moments.row(patterns.row_pattern[row] as usize),
                     -1.0,
                     ifirth,
                     &mut risk_sum,
@@ -500,7 +500,7 @@ fn evaluate_fast(
         let linear_predictor = x_all.row_dot(row, coefficients);
         let row_risk = data.pattern_data.as_ref().map_or_else(
             || linear_predictor.exp(),
-            |patterns| pattern_moments.get(patterns.row_pattern[row], 0),
+            |patterns| pattern_moments.get(patterns.row_pattern[row] as usize, 0),
         );
         let weights = data.score_weights(row);
         let current_events;
@@ -519,7 +519,7 @@ fn evaluate_fast(
 
         if let Some(patterns) = &data.pattern_data {
             update_precomputed_moments(
-                pattern_moments.row(patterns.row_pattern[row]),
+                pattern_moments.row(patterns.row_pattern[row] as usize),
                 1.0,
                 ifirth,
                 &mut risk_sum,
