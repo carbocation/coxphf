@@ -172,7 +172,15 @@ pub(crate) fn profile_with_workspace(
             let restricted_nrow = 3 + p;
             let mut restricted_io = vec![0.0; restricted_nrow * p];
             for j in 0..p {
-                restricted_io[restricted_nrow * j] = f64::from(flags[j]);
+                // fit_with_workspace only reads an offset for a freely
+                // estimated coefficient when its input flag is 2. Start the
+                // nuisance coefficients at the unrestricted maximum, then let
+                // the fitter convert their flags back to the ordinary value 1.
+                restricted_io[restricted_nrow * j] = if flags[j] == 1 {
+                    2.0
+                } else {
+                    f64::from(flags[j])
+                };
                 restricted_io[1 + restricted_nrow * j] =
                     saved_coefficients[j] * f64::from(flags[j]);
             }
@@ -182,12 +190,39 @@ pub(crate) fn profile_with_workspace(
                 restricted_io[3 + restricted_nrow * (data.p + j)] = (data.ftmap[j] + 1) as f64;
             }
 
+            let restricted_parms_template = restricted_parms;
+
             fit_with_workspace(
                 data,
                 &mut restricted_parms,
                 &mut restricted_io,
                 like_workspace,
             );
+            let warm_start_failed = restricted_parms[7] >= 1.0
+                || restricted_parms[9] >= f64::from(maxit)
+                || !restricted_parms[10].is_finite();
+            if warm_start_failed {
+                // A warm start is normally closer to the restricted optimum,
+                // but it must not turn a fit that converges from zero into a
+                // profile failure. Retry from the historical cold start when
+                // the warm path reaches the iteration limit or fails
+                // numerically.
+                restricted_parms = restricted_parms_template;
+                restricted_io.fill(0.0);
+                for j in 0..p {
+                    restricted_io[restricted_nrow * j] = f64::from(flags[j]);
+                }
+                restricted_io[restricted_nrow * coefficient_index] = 0.0;
+                for j in 0..data.ntde {
+                    restricted_io[3 + restricted_nrow * (data.p + j)] = (data.ftmap[j] + 1) as f64;
+                }
+                fit_with_workspace(
+                    data,
+                    &mut restricted_parms,
+                    &mut restricted_io,
+                    like_workspace,
+                );
+            }
             if restricted_parms[7] >= 1.0 {
                 parms[8] = 2.0;
             }

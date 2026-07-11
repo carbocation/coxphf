@@ -670,6 +670,7 @@ IMPLICIT DOUBLE PRECISION (A-H,O-Z)
 INTRINSIC DABS, DSQRT, DSIGN                                                    
 double precision, dimension (15) :: parms
 double precision, dimension (15) :: parmsfc
+double precision, dimension (15) :: parmsfc_start
 double precision, dimension (int(parms(1))) :: T1,t2
 double precision, dimension (int(parms(1)),int(parms(2))) :: X, bresx
 integer, dimension (int(parms(1))) :: IC, ibresc
@@ -913,12 +914,19 @@ DO K2=1,IP+ntde
      parmsfc(13)=ngv
      parmsfc(14)=ntde
      parmsfc(15)=penalty
+     parmsfc_start=parmsfc
 
      IOAFC(2,:)=bsave(:)*IFLAG(:)   !151120GH, starting values for p-value computation
         
      do jjj=1,IP+ntde,1
-    !  IOAFC(1,jjj)=1               !commented 151120GH
-       IOAFC(1,jjj)=IFLAG(jjj)      !changed 151120GH
+       ! IFLAG=2 tells FIRTHCOX to initialize a freely estimated
+       ! nuisance coefficient from IOAFC(2,:) before converting the
+       ! flag back to the ordinary estimated value 1.
+       if (IFLAG(jjj) .eq. 1) then
+        IOAFC(1,jjj)=2
+       else
+        IOAFC(1,jjj)=IFLAG(jjj)
+       end if
 !       IOAFC(2,jjj)=0.
      end do
     !   IFLAG for estimation set to 0
@@ -931,6 +939,20 @@ DO K2=1,IP+ntde
       end do
      end if
      CALL FIRTHCOX(CARDS, PARMSFC, IOAFC)
+     if ((PARMSFC(8) .ge. 1) .or. (PARMSFC(10) .ge. imaxit)) then
+      ! Do not let a failed warm path replace a restricted fit that can
+      ! converge from the historical all-zero starting point.
+      parmsfc=parmsfc_start
+      IOAFC(1,:)=IFLAG(:)
+      IOAFC(2,:)=0.
+      IOAFC(1,K2)=0.
+      if (ntde .gt. 0) then
+       do jjj=1, ntde
+        ioafc(4,ip+jjj)=ftmap(jjj)
+       end do
+      end if
+      CALL FIRTHCOX(CARDS, PARMSFC, IOAFC)
+     end if
      IF (PARMSFC(8).GE.1) PARMS(9)=2
     ! write(6,*) "Var: " , k2
     ! write(6,*) "Code: ", parmsfc

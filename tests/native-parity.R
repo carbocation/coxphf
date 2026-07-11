@@ -118,6 +118,72 @@ stopifnot(
   all(is.na(selected_profile$iter.ci["z", ]))
 )
 
+# The restricted fit used for the profile-likelihood ratio starts its nuisance
+# coefficient at the unrestricted maximum. It must reach the same restricted
+# likelihood as a cold fit while using fewer iterations for this example.
+cold_restricted_profile <- fit_with_backend(
+  "rust",
+  Surv(start, stop, event) ~ x + z,
+  data = interval,
+  pl = FALSE,
+  adapt = c(0, 1),
+  maxit = 100
+)
+expected_profile_probability <- 1 - pchisq(
+  2 * (selected_profile$loglik[[2]] - cold_restricted_profile$loglik[[2]]),
+  1
+)
+stopifnot(
+  isTRUE(all.equal(
+    selected_profile$prob[["x"]],
+    expected_profile_probability,
+    tolerance = 1e-10
+  )),
+  selected_profile$iter.ci["x", "P-value"] < cold_restricted_profile$iter
+)
+
+# If the warm path reaches maxit, retry from zero so a warm start cannot turn a
+# previously convergent restricted fit into missing profile inference.
+set.seed(4)
+fallback_data <- data.frame(
+  time = rexp(40),
+  status = rbinom(40, 1, 0.25),
+  a = rnorm(40),
+  b = rbinom(40, 1, 0.5),
+  exposure = rbinom(40, 1, 0.08)
+)
+fallback_profile <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ a + b + exposure,
+  data = fallback_data,
+  pl = TRUE,
+  pl.select = "exposure",
+  inference.only = TRUE,
+  maxit = 15
+)
+fallback_cold <- fit_with_backend(
+  "rust",
+  Surv(time, status) ~ a + b + exposure,
+  data = fallback_data,
+  pl = FALSE,
+  adapt = c(1, 1, 0),
+  inference.only = TRUE,
+  maxit = 15
+)
+stopifnot(
+  is.finite(fallback_profile$prob[["exposure"]]),
+  fallback_profile$iter.ci["exposure", "P-value"] == fallback_cold$iter,
+  fallback_profile$iter.ci["exposure", "P-value"] < 15
+)
+expect_backend_parity(
+  Surv(time, status) ~ a + b + exposure,
+  data = fallback_data,
+  pl = TRUE,
+  pl.select = "exposure",
+  inference.only = TRUE,
+  maxit = 15
+)
+
 inference_profile <- fit_with_backend(
   "rust",
   Surv(start, stop, event) ~ x + z,
