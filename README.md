@@ -16,9 +16,9 @@ Install one from [rustup](https://rustup.rs/) before installing this fork.
 # Install coxphf from CRAN
 install.packages("coxphf")
 
-# Install the Rust/fast-interval branch from GitHub
+# Install the development version from GitHub
 # install.packages("remotes")
-remotes::install_github("carbocation/coxphf@feature/rust-backend")
+remotes::install_github("carbocation/coxphf")
 ```
 
 The Rust backend is used by default. For numerical comparisons during
